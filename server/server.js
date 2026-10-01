@@ -156,6 +156,33 @@ function leerCuerpo(req) {
 }
 const emailValido = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 
+/* ---------- respaldo total ---------- */
+function respaldoTotal() {
+  return {
+    tipo: 'timon-respaldo-total', formato: 1, fecha: new Date().toISOString(),
+    usuarios: db.usuarios.map((x) => ({ id: x.id, email: x.email, nombre: x.nombre, salt: x.salt, hash: x.hash, admin: !!x.admin, activo: x.activo !== false, creado: x.creado })),
+    permisos: db.permisos.map((p) => ({ userId: p.userId, empresaId: p.empresaId, rol: p.rol })),
+    empresas: db.empresas.map((e) => { const reg = leerEmpresa(e.id); return { id: e.id, nombre: e.nombre, creado: e.creado, version: reg.version, actualizado: reg.actualizado, actualizadoPor: reg.actualizadoPor, datos: reg.datos }; }),
+  };
+}
+function validarRespaldo(b) {
+  if (!b || b.tipo !== 'timon-respaldo-total' || !Array.isArray(b.usuarios) || !Array.isArray(b.empresas) || !Array.isArray(b.permisos)) return 'El archivo no es un respaldo total de Timón.';
+  const ids = new Set(), emails = new Set();
+  for (const x of b.usuarios) {
+    if (!x || typeof x.id !== 'string' || !/^[\w-]+$/.test(x.id) || !emailValido(String(x.email || '').toLowerCase()) || typeof x.salt !== 'string' || !/^[0-9a-f]{128}$/.test(String(x.hash || ''))) return 'El respaldo tiene un usuario con datos incompletos.';
+    if (ids.has(x.id) || emails.has(String(x.email).toLowerCase())) return 'El respaldo tiene usuarios repetidos.';
+    ids.add(x.id); emails.add(String(x.email).toLowerCase());
+  }
+  if (!b.usuarios.some((x) => x.admin && x.activo !== false)) return 'El respaldo no tiene ningún administrador activo: no se podría entrar.';
+  const eids = new Set();
+  for (const e of b.empresas) {
+    if (!e || typeof e.id !== 'string' || !/^[\w-]+$/.test(e.id) || !String(e.nombre || '').trim() || eids.has(e.id)) return 'El respaldo tiene una empresa con datos incompletos.';
+    if (e.datos != null && (typeof e.datos !== 'object' || !e.datos.empresa)) return `Los datos de «${e.nombre}» no son válidos.`;
+    eids.add(e.id);
+  }
+  return '';
+}
+
 let indexCache = null;
 function paginaPrincipal() {
   if (!indexCache || process.env.NODE_ENV !== 'production') {
@@ -205,7 +232,56 @@ async function api(req, res, url) {
   }
 
   // Empresas
-  let m = /^\/api\/empresas\/([\w-]+)(\/version)?$/.exec(ruta);
+  // Cambiar el nombre de una empresa (solo administradores). Actualiza también el nombre dentro de sus datos.
+  let m = /^\/api\/empresas\/([\w-]+)\/nombre$/.exec(ruta);
+  if (m && metodo === 'PUT') {
+    if (!u.admin) return error(res, 403, 'Solo un administrador puede cambiar el nombre de una empresa.');
+    const emp = db.empresas.find((e) => e.id === m[1]);
+    if (!emp) return error(res, 404, 'Empresa no encontrada.');
+    const b = await leerCuerpo(req);
+    const nombre = String(b.nombre || '').trim().slice(0, 120);
+    if (!nombre) return error(res, 400, 'Escribí el nombre de la empresa.');
+    emp.nombre = nombre;
+    guardarDB();
+    const reg = leerEmpresa(emp.id);
+    if (reg.datos && reg.datos.empresa) {
+      reg.datos.empresa.nombre = nombre;
+      Object.assign(reg, { version: reg.version + 1, actualizado: new Date().toISOString(), actualizadoPor: u.nombre || u.email });
+      guardarEmpresa(emp.id, reg);
+    }
+    return enviar(res, 200, { id: emp.id, nombre, version: reg.version });
+  }
+
+  // Respaldo total (solo administradores): todas las empresas con sus datos, usuarios (contraseñas cifradas) y permisos.
+  if (ruta === '/api/respaldo' && metodo === 'GET') {
+    if (!u.admin) return error(res, 403, 'Solo un administrador puede descargar el respaldo total.');
+    return enviar(res, 200, respaldoTotal(), { 'Content-Disposition': `attachment; filename="timon-respaldo-total-${new Date().toISOString().slice(0, 10)}.json"` });
+  }
+  if (ruta === '/api/respaldo' && metodo === 'POST') {
+    if (!u.admin) return error(res, 403, 'Solo un administrador puede restaurar el respaldo total.');
+    const b = await leerCuerpo(req);
+    const v = validarRespaldo(b);
+    if (v) return error(res, 400, v);
+    // Copia de seguridad de lo que hay antes de reemplazarlo.
+    escribirAtomico(path.join(BAK_DIR, `antes-de-restaurar-${Date.now()}.json`), JSON.stringify(respaldoTotal()));
+    const ahora = new Date().toISOString();
+    const nuevasIds = new Set(b.empresas.map((e) => e.id));
+    for (const e of db.empresas) if (!nuevasIds.has(e.id)) { try { fs.renameSync(empFile(e.id), path.join(BAK_DIR, `${e.id}-reemplazada-${Date.now()}.json`)); } catch (err) { /* sin datos */ } }
+    db.empresas = b.empresas.map((e) => ({ id: e.id, nombre: String(e.nombre).slice(0, 120), creado: e.creado || ahora }));
+    for (const e of b.empresas) {
+      const actual = leerEmpresa(e.id);
+      // La versión siempre sube: así las pantallas abiertas detectan el cambio y recargan.
+      guardarEmpresa(e.id, { version: Math.max(Number(e.version) || 0, actual.version) + 1, actualizado: ahora, actualizadoPor: `Restaurado por ${u.nombre || u.email}`, datos: e.datos || null });
+    }
+    db.usuarios = b.usuarios.map((x) => ({ id: x.id, email: String(x.email).trim().toLowerCase(), nombre: x.nombre || x.email, salt: x.salt, hash: x.hash, admin: !!x.admin, activo: x.activo !== false, creado: x.creado || ahora }));
+    db.permisos = b.permisos.filter((p) => ROLES.includes(p.rol) && nuevasIds.has(p.empresaId) && db.usuarios.some((x) => x.id === p.userId)).map((p) => ({ userId: p.userId, empresaId: p.empresaId, rol: p.rol }));
+    for (const [k, ses] of Object.entries(db.sesiones)) if (!db.usuarios.some((x) => x.id === ses.userId && x.activo)) delete db.sesiones[k];
+    guardarDB();
+    const sigue = db.usuarios.some((x) => x.id === u.id && x.activo);
+    return enviar(res, 200, { ok: true, empresas: db.empresas.length, usuarios: db.usuarios.length, reingresar: !sigue });
+  }
+
+  m = /^\/api\/empresas\/([\w-]+)(\/version)?$/.exec(ruta);
   if (m) {
     const id = m[1];
     const emp = db.empresas.find((e) => e.id === id);
@@ -274,6 +350,12 @@ async function api(req, res, url) {
     if (metodo === 'PUT') {
       const b = await leerCuerpo(req);
       if (x.id === u.id && (b.admin === false || b.activo === false)) return error(res, 400, 'No podés quitarte el acceso de administrador a vos mismo.');
+      if (b.email != null) {
+        const email = String(b.email).trim().toLowerCase();
+        if (!emailValido(email)) return error(res, 400, 'Correo inválido.');
+        if (db.usuarios.some((y) => y.id !== x.id && y.email === email)) return error(res, 400, 'Ya existe otro usuario con ese correo.');
+        x.email = email;
+      }
       if (b.nombre != null) x.nombre = String(b.nombre).trim().slice(0, 80) || x.email;
       if (b.admin != null) x.admin = !!b.admin;
       if (b.activo != null) { x.activo = !!b.activo; if (!x.activo) for (const [k, s] of Object.entries(db.sesiones)) if (s.userId === x.id) delete db.sesiones[k]; }

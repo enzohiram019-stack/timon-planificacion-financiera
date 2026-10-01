@@ -66,7 +66,11 @@ Cómo funciona:
 
 - Los datos de cada empresa se guardan en `/var/data/empresas/` (un archivo JSON por empresa) y los usuarios en `/var/data/db.json`. Contraseñas con scrypt; sesiones con cookie `HttpOnly` de 30 días.
 - Se guarda solo, un instante después de cada cambio. Si dos personas editan a la vez, la segunda recibe un aviso y se le carga la versión más nueva (no se pisan datos). Cada 45 segundos la pantalla trae los cambios de los demás.
-- **Respaldos**: una copia diaria por empresa en `/var/data/respaldos/` (se guardan 60 días), además de «Descargar respaldo (.json)» desde la herramienta.
+- **Respaldos**:
+  - **Respaldo de una empresa** (cualquier usuario con acceso): menú del usuario → botón «Respaldo» junto a cada empresa, o Datos y respaldos → «Respaldo de esta empresa». Lleva solo los datos de esa empresa, sin usuarios; se vuelve a cargar con «Restaurar respaldo».
+  - **Respaldo total** (solo administradores): menú del usuario → Usuarios y empresas → «Descargar respaldo total». Un archivo con todas las empresas, los usuarios (contraseñas cifradas con scrypt, no legibles) y sus permisos. «Restaurar respaldo total…» reemplaza todo lo del servidor; antes guarda una copia de lo que había en `/var/data/respaldos/`.
+  - Además, el servidor guarda una copia diaria de cada empresa en `/var/data/respaldos/` (60 días).
+- **Cambiar nombres, correos y contraseñas** (administradores): en Usuarios y empresas, el lápiz de cada empresa cambia su nombre; el lápiz de cada usuario cambia nombre, correo, contraseña, acceso y si está activo. Cada usuario puede cambiar su propia contraseña desde su menú.
 - Olvido de la contraseña del administrador: en Render, agregar la variable `ADMIN_RESET=1` (con `ADMIN_EMAIL` y la nueva `ADMIN_PASSWORD`), reiniciar, entrar y después quitar `ADMIN_RESET`.
 - No incluye avisos por correo: para eso hace falta además un servicio de envío de correos.
 - Probarlo en una computadora: `node server/server.js` (Node 18 o más nuevo) con las variables `ADMIN_EMAIL` y `ADMIN_PASSWORD`, y abrir `http://localhost:3000`.

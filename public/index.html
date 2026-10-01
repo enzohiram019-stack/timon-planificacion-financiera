@@ -2086,6 +2086,7 @@ async function exportarJSON() {
 function leerRespaldo(texto) {
   let o;
   try { o = JSON.parse(texto); } catch (e) { throw new Error('El archivo no es un JSON válido.'); }
+  if (o && o.tipo === 'timon-respaldo-total') throw new Error(SERVIDOR ? 'Este es un respaldo total (todas las empresas y usuarios): restauralo desde el menú del usuario → Usuarios y empresas → Restaurar respaldo total.' : 'Este es un respaldo total del servidor: solo se puede restaurar en la versión con usuarios.');
   if (!o || typeof o !== 'object' || !Array.isArray(o.grupos) || !Array.isArray(o.lineas) || !o.periodo) throw new Error('El archivo no parece un respaldo de esta herramienta (faltan el período o la estructura del flujo).');
   delete o.app;
   return normalizeState(o);
@@ -2966,6 +2967,7 @@ const ICONS = {
   produccion: '<path d="M3 20V10l5 3V10l5 3V6h4l1 14z"/><path d="M3 20h18"/>',
   bancos: '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M7 15h4"/>',
   indicadores: '<path d="M4 20V4M4 20h16"/><path d="M8 16l4-5 3 3 5-7"/>',
+  descarga: '<path d="M12 3v12M7 10l5 5 5-5M4 19h16"/>',
   lock: '<rect x="5" y="11" width="14" height="9.5" rx="2"/><path d="M8.5 11V8a3.5 3.5 0 017 0v3"/>',
   unlock: '<rect x="5" y="11" width="14" height="9.5" rx="2"/><path d="M8.5 11V8a3.5 3.5 0 016.8-1.2"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
@@ -3613,7 +3615,8 @@ function datosPanel() {
   <section class="panel"><div class="panel-head"><div><h2>Importar Excel</h2><div class="sub">Acepta la plantilla de la herramienta o una planilla de flujo mensual con meses en columnas y conceptos en la columna A (deudas a cobrar, ventas proyectadas, egresos y financiamiento).</div></div><button class="btn btn-primary" data-action="importar-excel">Elegir archivo Excel</button></div>
   ${r ? `<div class="panel-body"><div class="inline-note">Última importación: <b>${esc(S.meta.archivo || 'planilla')}</b> el ${fmtDate(S.meta.importado)} · ${esc(mLabel(r.meses[0]))} a ${esc(mLabel(r.meses[1]))}. <button class="btn btn-sm btn-ghost" data-action="ver-resumen-import">Ver resumen</button></div></div>` : ''}</section>
   <section class="panel"><div class="panel-head"><div><h2>Respaldos</h2><div class="sub">${SERVIDOR ? 'Los datos se guardan en el servidor y los ven los usuarios con acceso a esta empresa. Igual conviene descargar un respaldo de vez en cuando.' : 'Los datos se guardan solo en este navegador. Descargá un respaldo con frecuencia o antes de cambiar de computadora.'}</div></div></div><div class="panel-body"><div class="toolbar">
-    <button class="btn" data-action="exportar-json">${icon('down', 15)}Descargar respaldo (.json)</button>
+    <button class="btn" data-action="exportar-json">${icon('descarga', 15)}${SERVIDOR ? 'Respaldo de esta empresa (.json)' : 'Descargar respaldo (.json)'}</button>
+    ${SERVIDOR && SRV.usuario && SRV.usuario.admin ? `<button class="btn" data-action="srv-respaldo-total">${icon('descarga', 15)}Respaldo total (todas las empresas y usuarios)</button>` : ''}
     <button class="btn" data-action="copiar-json">Copiar respaldo al portapapeles</button>
     <button class="btn" data-action="importar-json">Restaurar respaldo</button>
     <button class="btn" data-action="exportar-excel">Exportar reportes a Excel</button>
@@ -4013,7 +4016,7 @@ function openModal({ title, sub = '', body, foot, wide = false, onMount }) {
   const m = root.querySelector('.modal');
   if (onMount) onMount(m);
   const first = m.querySelector('input:not([type=hidden]):not([readonly]),select,textarea,button.btn-primary');
-  setTimeout(() => first && first.focus(), 20);
+  setTimeout(() => { if (first && !m.contains(document.activeElement)) first.focus(); }, 20);
   return m;
 }
 function closeModal() {
@@ -5306,7 +5309,7 @@ async function iniciarServidor() {
 /* ---------- menú de cuenta, cambio de empresa, contraseña y usuarios ---------- */
 function modalMiCuenta() {
   const u = SRV.usuario;
-  const emps = SRV.empresas.map((e) => `<tr><td class="wrap">${esc(e.nombre)}</td><td>${e.rol === 'admin' ? 'Administrador' : e.rol === 'editor' ? 'Puede editar' : 'Solo lectura'}</td><td class="act">${e.id === SRV.empresaId ? chip('good', 'Abierta') : `<button class="btn btn-sm" data-action="srv-empresa" data-id="${e.id}">Abrir</button>`}</td></tr>`).join('');
+  const emps = SRV.empresas.map((e) => `<tr><td class="wrap">${esc(e.nombre)}</td><td>${e.rol === 'admin' ? 'Administrador' : e.rol === 'editor' ? 'Puede editar' : 'Solo lectura'}</td><td class="act"><button class="btn btn-sm btn-ghost" data-action="srv-respaldo-empresa" data-id="${e.id}" title="Descargar los datos de esta empresa">${icon('descarga', 14)}Respaldo</button>${e.id === SRV.empresaId ? chip('good', 'Abierta') : `<button class="btn btn-sm" data-action="srv-empresa" data-id="${e.id}">Abrir</button>`}</td></tr>`).join('');
   openModal({
     title: u.nombre, sub: `${esc(u.email)}${u.admin ? ' · administrador' : ''}${SRV.actualizadoPor ? ` · último guardado de ${esc(SRV.actualizadoPor)} el ${esc(new Date(SRV.actualizado).toLocaleString('es-PY', { dateStyle: 'short', timeStyle: 'short' }))}` : ''}`, wide: true,
     body: `<h3 style="font-size:14px;margin-bottom:8px">Empresas</h3><div class="tbl-wrap"><table class="list"><tbody>${emps}</tbody></table></div>`,
@@ -5333,7 +5336,8 @@ async function modalUsuarios() {
     title: 'Usuarios y empresas', wide: true,
     sub: 'Cada usuario entra con su correo y contraseña. El administrador ve y edita todas las empresas; los demás, solo las que tienen asignadas: «edita» puede cargar datos, «lee» solo consulta.',
     body: `<div class="tbl-wrap"><table class="list"><thead><tr><th>Usuario</th><th>Acceso</th><th></th></tr></thead><tbody>${data.usuarios.map((u) => `<tr><td class="wrap"><b>${esc(u.nombre)}</b><br><span class="muted small">${esc(u.email)}</span>${u.activo ? '' : ` ${chip('warn', 'Inactivo')}`}</td><td class="wrap small">${u.admin ? 'Administrador: todas las empresas' : u.permisos.length ? u.permisos.map((p) => `${esc(nombreEmp(p.empresaId))} (${rolTxt[p.rol]})`).join(' · ') : '<span class="muted">Sin empresas</span>'}</td><td class="act"><button class="btn btn-sm btn-ghost" data-action="srv-usuario-editar" data-id="${u.id}" aria-label="Editar">${icon('edit', 14)}</button>${u.id === SRV.usuario.id ? '' : `<button class="btn btn-sm btn-ghost btn-danger" data-action="srv-usuario-eliminar" data-id="${u.id}" aria-label="Eliminar">${icon('trash', 14)}</button>`}</td></tr>`).join('')}</tbody></table></div>
-    <h3 style="font-size:14px;margin:18px 0 8px">Empresas</h3><div class="tbl-wrap"><table class="list"><tbody>${data.empresas.map((e) => `<tr><td class="wrap">${esc(e.nombre)}</td><td class="act">${e.id === SRV.empresaId ? chip('good', 'Abierta') : `<button class="btn btn-sm btn-ghost btn-danger" data-action="srv-empresa-eliminar" data-id="${e.id}" aria-label="Eliminar empresa">${icon('trash', 14)}</button>`}</td></tr>`).join('')}</tbody></table></div>`,
+    <h3 style="font-size:14px;margin:18px 0 8px">Empresas</h3><div class="tbl-wrap"><table class="list"><tbody>${data.empresas.map((e) => `<tr><td class="wrap">${esc(e.nombre)}${e.id === SRV.empresaId ? ` ${chip('good', 'Abierta')}` : ''}</td><td class="act"><button class="btn btn-sm btn-ghost" data-action="srv-empresa-renombrar" data-id="${e.id}" aria-label="Cambiar nombre de ${esc(e.nombre)}" title="Cambiar nombre">${icon('edit', 14)}</button><button class="btn btn-sm btn-ghost" data-action="srv-respaldo-empresa" data-id="${e.id}" title="Respaldo solo de esta empresa">${icon('descarga', 14)}Respaldo</button>${e.id === SRV.empresaId ? '' : `<button class="btn btn-sm btn-ghost btn-danger" data-action="srv-empresa-eliminar" data-id="${e.id}" aria-label="Eliminar empresa">${icon('trash', 14)}</button>`}</td></tr>`).join('')}</tbody></table></div>
+    <h3 style="font-size:14px;margin:18px 0 8px">Respaldo total</h3><p class="small muted" style="margin-bottom:8px">Un solo archivo con todas las empresas y sus datos, los usuarios (con las contraseñas cifradas) y sus permisos. Guardalo en un lugar seguro. Restaurarlo reemplaza todo lo que hay en el servidor.</p><div class="toolbar"><button class="btn" data-action="srv-respaldo-total">${icon('descarga', 15)}Descargar respaldo total</button><button class="btn" data-action="srv-restaurar-total">Restaurar respaldo total…</button></div>`,
     foot: `<button class="btn" data-action="srv-empresa-nueva" style="margin-right:auto">Nueva empresa</button><button class="btn" data-action="srv-usuario-editar">${icon('plus', 14)}Agregar usuario</button><button class="btn btn-primary" data-action="modal-cerrar">Cerrar</button>`,
   });
   SRV.admin = data;
@@ -5345,7 +5349,7 @@ function modalUsuario(id) {
   const m = openModal({
     title: u ? 'Editar usuario' : 'Agregar usuario', wide: true,
     body: `<div class="form-grid">
-      <div class="field"><label for="us-email">Correo</label><input type="email" id="us-email" value="${esc(u ? u.email : '')}" ${u ? 'readonly' : ''}></div>
+      <div class="field"><label for="us-email">Correo</label><input type="email" id="us-email" value="${esc(u ? u.email : '')}" autocomplete="off"></div>
       <div class="field"><label for="us-nombre">Nombre</label><input type="text" id="us-nombre" value="${esc(u ? u.nombre : '')}"></div>
       <div class="field span2"><label for="us-clave">${u ? 'Contraseña nueva (vacío = no cambia)' : 'Contraseña inicial (8 caracteres o más)'}</label><input type="text" id="us-clave" autocomplete="off" placeholder="${u ? '' : 'Pasásela a la persona por un medio seguro'}"></div>
       <label class="check span2"><input type="checkbox" id="us-admin" ${u && u.admin ? 'checked' : ''}> Administrador (ve y edita todas las empresas y gestiona usuarios)</label>
@@ -5362,16 +5366,82 @@ function modalUsuario(id) {
     const body = { nombre: val(m, 'us-nombre').trim(), admin: m.querySelector('#us-admin').checked, permisos };
     const clave = val(m, 'us-clave');
     if (clave) body.password = clave;
-    if (u) body.activo = m.querySelector('#us-activo').checked; else body.email = val(m, 'us-email').trim();
+    body.email = val(m, 'us-email').trim();
+    if (u) body.activo = m.querySelector('#us-activo').checked;
     try {
-      await apiFetch(u ? `/api/usuarios/${u.id}` : '/api/usuarios', { method: u ? 'PUT' : 'POST', body });
+      const r = await apiFetch(u ? `/api/usuarios/${u.id}` : '/api/usuarios', { method: u ? 'PUT' : 'POST', body });
+      const yo = r.usuarios.find((x) => x.id === SRV.usuario.id);
+      if (yo) { Object.assign(SRV.usuario, { nombre: yo.nombre, email: yo.email }); renderChrome(model()); }
       toast(u ? 'Usuario actualizado.' : 'Usuario creado. Pasale el correo y la contraseña.');
       await modalUsuarios();
     } catch (e) { m.querySelector('#us-err').textContent = e.message; }
   });
 }
 
+/* ---------- respaldos ---------- */
+const fechaArchivo = () => new Date().toISOString().slice(0, 10);
+async function srvRespaldoEmpresa(id) {
+  try {
+    if (id === SRV.empresaId) { if (SRV.sucio) await srvEnviar(); await exportarJSON(); return; }
+    const reg = await apiFetch(`/api/empresas/${encodeURIComponent(id)}`);
+    const emp = SRV.empresas.find((e) => e.id === id) || (SRV.admin && SRV.admin.empresas.find((e) => e.id === id)) || {};
+    if (!reg.datos) { toast('Esta empresa todavía no tiene datos cargados.', true); return; }
+    if (await descargar(`timon-${slug(emp.nombre || reg.datos.empresa.nombre)}-${fechaArchivo()}.json`, JSON.stringify({ app: 'timon-financiero', ...reg.datos }, null, 1), 'application/json')) toast('Respaldo de la empresa descargado.');
+  } catch (e) { toast(e.message, true); }
+}
+async function srvRespaldoTotal() {
+  try {
+    if (SRV.sucio) await srvEnviar();
+    const r = await apiFetch('/api/respaldo');
+    if (await descargar(`timon-respaldo-total-${fechaArchivo()}.json`, JSON.stringify(r), 'application/json')) toast(`Respaldo total descargado: ${r.empresas.length} ${r.empresas.length === 1 ? 'empresa' : 'empresas'} y ${r.usuarios.length} usuarios.`);
+  } catch (e) { toast(e.message, true); }
+}
+function srvRestaurarTotal() {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = '.json,application/json';
+  inp.addEventListener('change', async () => {
+    const f = inp.files[0];
+    if (!f) return;
+    let b;
+    try { b = JSON.parse(await f.text()); } catch (e) { toast('El archivo no es un JSON válido.', true); return; }
+    if (!b || b.tipo !== 'timon-respaldo-total') { toast('Este archivo no es un respaldo total. Para el respaldo de una sola empresa usá Datos y respaldos → Restaurar respaldo.', true); return; }
+    const ok = await confirmar({ title: 'Restaurar respaldo total', text: `Se reemplazan <b>todas</b> las empresas, usuarios y permisos del servidor por los de «${esc(f.name)}» (${b.empresas.length} empresas y ${b.usuarios.length} usuarios, del ${esc(new Date(b.fecha).toLocaleString('es-PY', { dateStyle: 'short', timeStyle: 'short' }))}). Antes se guarda una copia de lo actual en el servidor. Las contraseñas pasan a ser las del respaldo.`, ok: 'Restaurar todo', danger: true });
+    if (!ok) return;
+    try {
+      SRV.sucio = false; clearTimeout(SRV.timer);
+      const r = await apiFetch('/api/respaldo', { method: 'POST', body: b });
+      toast(`Respaldo restaurado: ${r.empresas} empresas y ${r.usuarios} usuarios.`);
+      setTimeout(() => location.reload(), 900);
+    } catch (e) { toast(e.message, true); }
+  });
+  inp.click();
+}
+function modalRenombrarEmpresa(id) {
+  const e = SRV.admin.empresas.find((x) => x.id === id);
+  const m = openModal({
+    title: 'Cambiar nombre de la empresa',
+    body: `<div class="form-grid" style="grid-template-columns:1fr"><div class="field"><label for="rn-nombre">Nombre</label><input type="text" id="rn-nombre" value="${esc(e.nombre)}"></div></div><div class="err" id="rn-err" role="alert"></div>`,
+    foot: '<button class="btn" data-action="srv-usuarios">Volver</button><button class="btn btn-primary" id="rn-ok">Guardar</button>',
+  });
+  m.querySelector('#rn-ok').addEventListener('click', async () => {
+    const nombre = val(m, 'rn-nombre').trim();
+    if (!nombre) { m.querySelector('#rn-err').textContent = 'Escribí el nombre.'; return; }
+    try {
+      if (id === SRV.empresaId && SRV.sucio) await srvEnviar();
+      await apiFetch(`/api/empresas/${encodeURIComponent(id)}/nombre`, { method: 'PUT', body: { nombre } });
+      const x = SRV.empresas.find((y) => y.id === id); if (x) x.nombre = nombre;
+      if (id === SRV.empresaId) { await srvCargarEmpresa(id); render(); }
+      toast('Nombre de la empresa actualizado.');
+      await modalUsuarios();
+    } catch (err) { m.querySelector('#rn-err').textContent = err.message; }
+  });
+}
+
 Object.assign(ACCIONES_R3, {
+  'srv-respaldo-empresa': (el) => srvRespaldoEmpresa(el.dataset.id),
+  'srv-respaldo-total': () => srvRespaldoTotal(),
+  'srv-restaurar-total': () => srvRestaurarTotal(),
+  'srv-empresa-renombrar': (el) => modalRenombrarEmpresa(el.dataset.id),
   'menu-cuenta': () => modalMiCuenta(),
   'srv-salir': () => srvSalir(),
   'srv-clave': () => modalClave(),
