@@ -15,9 +15,9 @@ services:
         value: production
       - key: DATA_DIR
         value: /var/data
-      - key: ADMIN_EMAIL
+      - key: enzoelias@mentu.com.py
         sync: false
-      - key: ADMIN_PASSWORD
+      - key: Mentu123
         sync: false
     disk:
       name: datos-timon
