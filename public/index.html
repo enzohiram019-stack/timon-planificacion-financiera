@@ -137,6 +137,11 @@ body.sin-sesion .app{display:none}
 .srv-lista{display:flex;flex-direction:column;gap:8px}
 .srv-emp{justify-content:space-between;width:100%;height:auto;padding:10px 12px;text-align:left}
 
+/* ---------- Lectura del balance ---------- */
+ul.lectura{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:8px;font-size:14px;line-height:1.5}
+ul.lectura b{font-weight:650}
+.ctl-bal .chip{white-space:normal;height:auto;line-height:1.35;padding-top:3px;padding-bottom:3px}
+
 /* ---------- Componentes ---------- */
 .page-head{display:flex;flex-wrap:wrap;gap:12px 20px;align-items:flex-end;justify-content:space-between}
 .page-head .lede{color:var(--ink-2);margin-top:5px;max-width:72ch;font-size:13.5px}
@@ -395,6 +400,10 @@ const APP = {
   version: 1,
   storageKey: 'timon-financiero-datos-v1',
   uiKey: 'timon-financiero-ui-v1',
+  pdfUrls: [
+    ['https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js', 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'],
+    ['https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js', 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js'],
+  ],
   xlsxUrls: [
     'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
     'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js',
@@ -683,6 +692,7 @@ function emptyState() {
     cuentas: [],
     conciliaciones: {},
     fotos: [],
+    balancesReales: [],
     escenarios: defaultEscenarios(),
     balanceInicial: emptyBalance(),
     presupuesto: null,
@@ -700,7 +710,7 @@ function normalizeState(x) {
   if (!/^\d{4}-\d{2}$/.test(s.periodo.inicio)) s.periodo.inicio = base.periodo.inicio;
   s.config = Object.assign({}, base.config, s.config || {});
   s.balanceInicial = Object.assign(emptyBalance(), s.balanceInicial || {});
-  for (const k of ['grupos', 'lineas', 'clientes', 'productos', 'plan', 'ventas', 'cobros', 'proveedores', 'compras', 'pagos', 'prestamos', 'insumos', 'cuentas', 'fotos']) if (!Array.isArray(s[k])) s[k] = [];
+  for (const k of ['grupos', 'lineas', 'clientes', 'productos', 'plan', 'ventas', 'cobros', 'proveedores', 'compras', 'pagos', 'prestamos', 'insumos', 'cuentas', 'fotos', 'balancesReales']) if (!Array.isArray(s[k])) s[k] = [];
   if (!s.conciliaciones || typeof s.conciliaciones !== 'object') s.conciliaciones = {};
   if (!MONEDAS[s.empresa.moneda]) s.empresa.moneda = /gs|₲|pyg/i.test(s.empresa.simbolo || '') ? 'PYG' : 'USD';
   s.empresa.simbolo = MONEDAS[s.empresa.moneda];
@@ -1327,12 +1337,12 @@ function compute(S, opts = {}) {
   for (const map of [cxcCli, planCli]) for (const row of map.values()) { const m = toM(row.eff); for (let mi = 0; mi < nM; mi++) cobranzasM[mi] += m[mi]; }
   for (const map of [cxpProv, mrpRows]) for (const row of map.values()) { const m = toM(row.eff); for (let mi = 0; mi < nM; mi++) pagosProvM[mi] += m[mi]; }
   const TE = tipoMes.eff, E = eerr.proy;
-  const keys = ['caja', 'cxc', 'inv', 'oc', 'bu', 'oanc', 'prov', 'otras', 'prestCP', 'prestLP', 'prest', 'iva', 'imp', 'cap', 'res', 'ra', 're'];
+  const keys = ['caja', 'cxc', 'inv', 'oc', 'bu', 'oanc', 'prov', 'otras', 'prestCP', 'prestLP', 'prest', 'iva', 'imp', 'opnc', 'cap', 'res', 'ra', 're'];
   const bal = {}; for (const k of keys) bal[k] = [];
   const ini = {
     caja: Number(cfg.saldoInicial) || 0, cxc: ar0, inv: bi.inventarios, oc: bi.otrosCreditos, bu: bi.bienesUso, oanc: bi.otrosActivosNC,
     prov: ap0, otras: bi.proveedores, prest: (Number(bi.prestamos) || 0) + prest0Cron, iva: Number(bi.ivaPagar) || 0, imp: bi.impuestos,
-    cap: bi.capital, res: bi.reservas, ra: bi.resultadosAcumulados, re: 0,
+    opnc: 0, cap: bi.capital, res: bi.reservas, ra: bi.resultadosAcumulados, re: 0,
   };
   const partirPrestamo = (total, desde) => {
     let cp = 0;
@@ -1359,12 +1369,36 @@ function compute(S, opts = {}) {
     ra -= TE.retiro[mi];
     re += E.rn[mi];
     const p = partirPrestamo(prest, mi + 1);
-    const vals = { caja: saldo.eff.fin[mi * 4 + 3], cxc, inv, oc, bu, oanc: ini.oanc, prov, otras, prestCP: p.cp, prestLP: p.lp, prest, iva, imp, cap, res: ini.res, ra, re };
+    const vals = { caja: saldo.eff.fin[mi * 4 + 3], cxc, inv, oc, bu, oanc: ini.oanc, prov, otras, prestCP: p.cp, prestLP: p.lp, prest, iva, imp, opnc: 0, cap, res: ini.res, ra, re };
     for (const k of keys) bal[k].push(vals[k]);
   }
+  /* Balance real importado: desde su mes, el proyectado parte de sus saldos y suma los movimientos posteriores. */
+  const ancla = (() => {
+    const previo = addMonths(months[0], -1);
+    const cands = (S.balancesReales || []).filter((b) => b.mes && b.mes >= previo && b.mes <= months[nM - 1]).sort((a, b) => a.mes.localeCompare(b.mes));
+    if (!cands.length) return null;
+    const b = cands[cands.length - 1];
+    const f = factorBase(b.moneda, b.tc);
+    const { rub } = resumenBalance(b.lineas, b.eerr);
+    const refIdx = midx.has(b.mes) ? midx.get(b.mes) : -1;
+    const comp = {}; for (const k of keys) comp[k] = refIdx >= 0 ? bal[k][refIdx] : ini[k];
+    const real = {}, off = {};
+    for (const k of Object.keys(RUBROS_BAL)) { real[k] = rub[k] * f; off[k] = real[k] - (comp[k] || 0); }
+    const anioRef = b.mes.slice(0, 4);
+    if (refIdx < 0) { for (const k of Object.keys(off)) ini[k] += off[k]; ini.prest = ini.prestCP + ini.prestLP; }
+    for (let mi = Math.max(0, refIdx); mi < nM; mi++) {
+      const o = {}; for (const k of keys) o[k] = bal[k][mi];
+      for (const k of Object.keys(off)) o[k] += off[k];
+      // Al cambiar de año, el resultado del ejercicio del balance real pasa a resultados acumulados.
+      if (months[mi].slice(0, 4) > anioRef) { o.re -= off.re; o.ra += off.re; }
+      o.prest = o.prestCP + o.prestLP;
+      for (const k of keys) bal[k][mi] = o[k];
+    }
+    return { b, f, refIdx, real, comp, off };
+  })();
   const totales = (g) => {
     const ac = g.caja + g.cxc + g.inv + g.oc, anc = g.bu + g.oanc;
-    const pc = g.prov + g.otras + g.prestCP + g.iva + g.imp, pnc = g.prestLP;
+    const pc = g.prov + g.otras + g.prestCP + g.iva + g.imp, pnc = g.prestLP + (g.opnc || 0);
     const pn = g.cap + g.res + g.ra + g.re;
     return { ac, anc, activo: ac + anc, pc, pnc, pasivo: pc + pnc, pn, pasivoPn: pc + pnc + pn, dif: ac + anc - (pc + pnc + pn) };
   };
@@ -1407,7 +1441,7 @@ function compute(S, opts = {}) {
     secTot, saldo, tipoMes,
     ventasReal, cmvReal, pptoVentas, pptoCmv, pendVentas, pendCmv, ventasProy, cmvProy, ventasCliMes, planFilas,
     compraDest, comprasTotalM, ivaDebProy, ivaCredM, ivaLiq,
-    eerr, balIni, balMes, cobranzasM, pagosProvM,
+    eerr, balIni, balMes, cobranzasM, pagosProvM, ancla,
     ultimaCerrada, semanasSinCerrar, minIdx, primerNegativo, alerts,
     cliById, prodById, provById, gById,
   };
@@ -2632,6 +2666,336 @@ function aplicarPlantilla(pt, modo) {
   return { st, res };
 }
 /* =====================================================================
+   Lector de balances: PDF, Excel o texto pegado.
+   Reconoce la estructura habitual (activo y pasivo corriente / no corriente,
+   grupos, subtotales y el estado de resultados) y clasifica cada cuenta en
+   los rubros del balance proyectado.
+   ===================================================================== */
+
+/* Rubros del balance proyectado (claves del motor). */
+const RUBROS_BAL = {
+  caja: { label: 'Disponibilidades', sec: 'A', sub: 'C' },
+  cxc: { label: 'Deudores por ventas', sec: 'A', sub: 'C' },
+  oc: { label: 'Otros créditos y activos corrientes', sec: 'A', sub: 'C' },
+  inv: { label: 'Inventarios', sec: 'A', sub: 'C' },
+  bu: { label: 'Propiedad, planta y equipo (neto)', sec: 'A', sub: 'N' },
+  oanc: { label: 'Otros activos no corrientes', sec: 'A', sub: 'N' },
+  prov: { label: 'Acreedores comerciales', sec: 'P', sub: 'C' },
+  prestCP: { label: 'Deudas financieras a corto plazo', sec: 'P', sub: 'C' },
+  otras: { label: 'Otras cuentas por pagar', sec: 'P', sub: 'C' },
+  iva: { label: 'IVA a pagar', sec: 'P', sub: 'C' },
+  imp: { label: 'Impuesto a la renta a pagar', sec: 'P', sub: 'C' },
+  prestLP: { label: 'Deudas financieras a largo plazo', sec: 'P', sub: 'N' },
+  opnc: { label: 'Otros pasivos no corrientes', sec: 'P', sub: 'N' },
+  cap: { label: 'Capital', sec: 'E' },
+  res: { label: 'Reservas', sec: 'E' },
+  ra: { label: 'Resultados acumulados', sec: 'E' },
+  re: { label: 'Resultado del ejercicio', sec: 'E' },
+};
+const RUBROS_EERR = {
+  ventas: { label: 'Ventas netas', signo: 1 },
+  cmv: { label: 'Costo de ventas', signo: -1 },
+  oing: { label: 'Otros ingresos', signo: 1 },
+  dcambio: { label: 'Diferencia de cambio', signo: 0 },
+  gcom: { label: 'Gastos de comercialización', signo: -1 },
+  gadm: { label: 'Gastos de administración', signo: -1 },
+  gfin: { label: 'Gastos financieros', signo: -1 },
+  dep: { label: 'Depreciaciones y amortizaciones', signo: -1 },
+  ire: { label: 'Impuesto a la renta', signo: -1 },
+};
+
+const nb = (t) => norm(String(t || '').replace(/[–—]/g, '-').replace(/[()]/g, ' ').replace(/[.:]+$/g, '')).replace(/\s+/g, ' ').trim();
+
+/* Monto con separadores de Paraguay (1.234.567,89) o en inglés (1,234,567.89). «-» = cero. */
+function parseMontoBalance(t) {
+  if (t == null) return null;
+  if (typeof t === 'number') return isFinite(t) ? t : null;
+  let s = String(t).trim().replace(/[\s ]/g, '').replace(/[−–]/g, '-');
+  if (!s) return null;
+  if (/^-+$/.test(s)) return 0;
+  let neg = false;
+  if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1); }
+  if (s.startsWith('-')) { neg = !neg; s = s.slice(1); }
+  s = s.replace(/^(gs\.?|us\$|\$|usd|pyg)/i, '');
+  if (!/^\d[\d.,]*$/.test(s)) return null;
+  const lastDot = s.lastIndexOf('.'), lastComma = s.lastIndexOf(',');
+  let n;
+  if (lastDot >= 0 && lastComma >= 0) n = lastComma > lastDot ? Number(s.replace(/\./g, '').replace(',', '.')) : Number(s.replace(/,/g, ''));
+  else if (lastDot >= 0) n = /^\d{1,3}(\.\d{3})+$/.test(s) ? Number(s.replace(/\./g, '')) : Number(s);
+  else if (lastComma >= 0) n = /^\d{1,3}(,\d{3})+$/.test(s) ? Number(s.replace(/,/g, '')) : Number(s.replace(',', '.'));
+  else n = Number(s);
+  return isFinite(n) ? (neg ? -n : n) : null;
+}
+
+/* Una línea de texto «NOMBRE DE LA CUENTA   1.234.567» → { nombre, valor }. */
+const RE_MONTO_FINAL = /^(.*?[^\d\s.,(-]|.*?\S\s)\s*((?:\(\s*)?[-−–]?\s*\d{1,3}(?:[.,\s]\d{3})*(?:[.,]\d{1,2})?\s*\)?|[-–])\s*$/;
+function lineaDeTexto(t) {
+  const s = String(t || '').replace(/\s+/g, ' ').trim();
+  if (!s) return null;
+  const m = RE_MONTO_FINAL.exec(s);
+  if (m && m[1].trim()) {
+    const v = parseMontoBalance(m[2]);
+    if (v != null) return { nombre: m[1].trim(), valor: v };
+  }
+  return { nombre: s, valor: null };
+}
+
+/* Fecha de cierre: «AL 31 DE AGOSTO 2026», «al 31/08/2026». */
+function fechaDeBalance(textos) {
+  for (const t of textos) {
+    const s = nb(t);
+    let m = /\bal (\d{1,2}) de ([a-z]+) (?:de |del )?(\d{4})/.exec(s);
+    if (m && MES_IDX[m[2]]) return `${m[3]}-${pad(MES_IDX[m[2]])}-${pad(m[1])}`;
+    m = /\bal (\d{1,2})[/.-](\d{1,2})[/.-](\d{4})/.exec(s);
+    if (m) return `${m[3]}-${pad(m[2])}-${pad(m[1])}`;
+  }
+  return null;
+}
+
+/* ---------- lectura de archivos ---------- */
+let pdfPromise = null;
+function loadPDFJS() {
+  if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  if (pdfPromise) return pdfPromise;
+  pdfPromise = new Promise((resolve, reject) => {
+    const tryUrl = (k) => {
+      if (k >= APP.pdfUrls.length) { pdfPromise = null; reject(new Error('No se pudo cargar el lector de PDF. Revisá la conexión a internet e intentá de nuevo.')); return; }
+      const s = document.createElement('script');
+      s.src = APP.pdfUrls[k][0];
+      s.async = true;
+      s.onload = () => { if (window.pdfjsLib) { window.pdfjsLib.GlobalWorkerOptions.workerSrc = APP.pdfUrls[k][1]; resolve(window.pdfjsLib); } else tryUrl(k + 1); };
+      s.onerror = () => { s.remove(); tryUrl(k + 1); };
+      document.head.appendChild(s);
+    };
+    tryUrl(0);
+  });
+  return pdfPromise;
+}
+/* Texto de un PDF reconstruido en renglones (agrupa por altura y ordena de izquierda a derecha). */
+async function textoDePDF(buf) {
+  const pdfjs = await loadPDFJS();
+  const doc = await pdfjs.getDocument({ data: buf, isEvalSupported: false }).promise;
+  const lineas = [];
+  for (let p = 1; p <= doc.numPages; p++) {
+    const page = await doc.getPage(p);
+    const tc = await page.getTextContent();
+    const items = tc.items.filter((it) => it.str && it.str.trim()).map((it) => ({ s: it.str, x: it.transform[4], y: it.transform[5], w: it.width || 0 }));
+    items.sort((a, b) => b.y - a.y || a.x - b.x);
+    const grupos = [];
+    for (const it of items) {
+      const g = grupos.length ? grupos[grupos.length - 1] : null;
+      if (g && Math.abs(g.y - it.y) <= 3) g.items.push(it); else grupos.push({ y: it.y, items: [it] });
+    }
+    for (const g of grupos) {
+      g.items.sort((a, b) => a.x - b.x);
+      let txt = '', fin = null;
+      for (const it of g.items) { txt += (fin != null && it.x - fin > 1.5 && !txt.endsWith(' ') ? '   ' : '') + it.s; fin = it.x + it.w; }
+      lineas.push(txt);
+    }
+  }
+  return lineas;
+}
+/* Filas de una planilla: nombre = textos de la fila, valor = último número. */
+function filasDeExcel(XLSX, wb) {
+  const out = [];
+  for (const nombre of wb.SheetNames) {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[nombre], { header: 1, raw: true, defval: null });
+    for (const r of rows) {
+      const textos = [], nums = [];
+      r.forEach((c) => {
+        if (c == null || c === '') return;
+        if (typeof c === 'number') nums.push(c);
+        else { const v = parseMontoBalance(c); if (v != null && /\d/.test(String(c)) || /^\s*[-–]\s*$/.test(String(c))) nums.push(v ?? 0); else textos.push(String(c).trim()); }
+      });
+      if (!textos.length) continue;
+      out.push({ nombre: textos.join(' '), valor: nums.length ? nums[nums.length - 1] : null, texto: [...textos, ...nums].join(' ') });
+    }
+  }
+  return out;
+}
+
+/* ---------- estructura ---------- */
+const CABECERAS_BAL = [
+  [/^(total )?activos?$/, { tipo: 'tot', sec: 'A' }],
+  [/^(total )?activos? corrientes?$/, { tipo: 'tot', sec: 'A', sub: 'C' }],
+  [/^(total )?activos? no corrientes?$/, { tipo: 'tot', sec: 'A', sub: 'N' }],
+  [/^(total )?pasivos?$/, { tipo: 'tot', sec: 'P' }],
+  [/^(total )?pasivos? corrientes?$/, { tipo: 'tot', sec: 'P', sub: 'C' }],
+  [/^(total )?pasivos? no corrientes?$/, { tipo: 'tot', sec: 'P', sub: 'N' }],
+  [/^(total )?(del )?patrimonio( neto)?$/, { tipo: 'tot', sec: 'E' }],
+  [/^(total )?pasivos? (y|mas|\+) patrimonio( neto)?$/, { tipo: 'tot', fin: true }],
+  [/^(disponibilidades|disponible|caja y bancos|efectivo y equivalentes( de efectivo)?)$/, { tipo: 'grp', grp: 'caja' }],
+  [/^(creditos|cuentas por cobrar|creditos por ventas|deudores)$/, { tipo: 'grp', grp: 'creditos' }],
+  [/^(creditos|cuentas por cobrar) a largo plazo$/, { tipo: 'grp', grp: 'oanc' }],
+  [/^(inventarios|bienes de cambio|existencias|mercaderias)$/, { tipo: 'grp', grp: 'inv' }],
+  [/^(gastos pagados por adelantado|cargos diferidos)$/, { tipo: 'grp', grp: 'oc' }],
+  [/^otros activos( corrientes)?$/, { tipo: 'grp', grp: 'otros' }],
+  [/^(propiedad,? planta y equipos?|bienes de uso|activo fijo|activos fijos)$/, { tipo: 'grp', grp: 'bu' }],
+  [/^otros activos (a largo plazo|no corrientes)$/, { tipo: 'grp', grp: 'oanc' }],
+  [/^(activos )?intangibles?$|^activos intangibles$/, { tipo: 'grp', grp: 'oanc' }],
+  [/^(inversiones|inversiones permanentes)$/, { tipo: 'grp', grp: 'oanc' }],
+  [/^(acreedores comerciales|deudas comerciales|cuentas por pagar comerciales)$/, { tipo: 'grp', grp: 'prov' }],
+  [/^(deudas|obligaciones|pasivos) financier[ao]s$/, { tipo: 'grp', grp: 'prest' }],
+  [/^(otras cuentas por pagar|otras deudas|otros pasivos)$/, { tipo: 'grp', grp: 'otras' }],
+  [/^(deudas fiscales|deudas sociales|deudas fiscales y sociales|provisiones)$/, { tipo: 'grp', grp: 'otras' }],
+  [/^capital( social)?$/, { tipo: 'grp', grp: 'cap' }],
+  [/^reservas$/, { tipo: 'grp', grp: 'res' }],
+  [/^resultados$/, { tipo: 'grp', grp: 'ra' }],
+];
+const CABECERAS_EERR = [
+  [/^(ingresos operativos|ingresos por ventas|ventas netas|ingresos)$/, 'ventas'],
+  [/^(costo de (las )?(mercaderias|ventas|lo vendido|los productos vendidos)( vendidas)?|costos? operativos?)$/, 'cmv'],
+  [/^(otros ingresos|ingresos no operativos|otros ingresos y egresos)$/, 'oing'],
+  [/^gastos de (ventas|comercializacion)( o comercializacion)?$/, 'gcom'],
+  [/^gastos (de )?administra(cion|tivos)$/, 'gadm'],
+  [/^(gastos )?(bancarios y )?financieros$|^gastos financieros$|^resultados financieros$/, 'gfin'],
+  [/^depreciaciones( y amortizaciones)?( de activos)?$/, 'dep'],
+  [/^impuesto a la renta$|^ire$/, 'ire'],
+];
+const esTotalEERR = (s) => /^(ganancias?|perdidas?|resultados?|utilidad|margen|total)\b/.test(s) && !/^resultado por diferencia/.test(s) && !/^resultados? (acumulados|financieros)$/.test(s);
+
+function rubroBalanceHoja(s, ctx) {
+  const { sec, sub, grp } = ctx;
+  if (sec === 'A') {
+    if (grp === 'caja') return 'caja';
+    if (grp === 'inv') return 'inv';
+    if (grp === 'bu') return 'bu';
+    if (grp === 'oanc' || sub === 'N') return grp === 'bu' ? 'bu' : /deprecia/.test(s) && grp !== 'oanc' ? 'bu' : 'oanc';
+    if (/^(caja|bancos?|fondos? fijos?|recaudaciones a depositar|valores a depositar|efectivo)/.test(s)) return 'caja';
+    if (/deudores por ventas|^clientes|documentos a cobrar|cheques diferidos|deudores comerciales|cuentas a cobrar comerciales/.test(s)) return 'cxc';
+    if (/inventario|mercaderias|materias? primas?|productos terminados/.test(s) && grp !== 'creditos') return 'inv';
+    return 'oc';
+  }
+  if (sec === 'P') {
+    if (/iva\b.*(a pagar|debito)|^iva a pagar/.test(s)) return 'iva';
+    if (/impuesto a la renta a pagar|^ire a pagar|renta a pagar/.test(s)) return 'imp';
+    if (sub === 'N') return /prestamo|entidades financieras|deuda bancaria|obligaciones negociables|bonos/.test(s) ? 'prestLP' : 'opnc';
+    if (grp === 'prov' || /proveedores|acreedores comerciales/.test(s)) return 'prov';
+    if (grp === 'prest' || /prestamo|entidades financieras|sobregiro|tarjeta de credito|deuda bancaria/.test(s)) return 'prestCP';
+    return 'otras';
+  }
+  if (sec === 'E') {
+    if (/(resultado|utilidad|ganancia|perdida)s? del ejercicio/.test(s)) return 're';
+    if (grp === 'cap') return 'cap';
+    if (grp === 'res' || /reserva/.test(s)) return 'res';
+    if (grp === 'ra') return 'ra';
+    if (/capital/.test(s)) return 'cap';
+    return 'ra';
+  }
+  return null;
+}
+function rubroEERRHoja(s, grp) {
+  if (/diferencia de cambio|diferencias? cambiarias?/.test(s)) return 'dcambio';
+  if (/impuesto a la renta|^ire\b/.test(s)) return 'ire';
+  if (grp) return grp;
+  if (/^ventas|descuentos concedidos|devoluciones/.test(s)) return 'ventas';
+  if (/^costo/.test(s)) return 'cmv';
+  if (/deprecia|amortizaciones del ejercicio/.test(s)) return 'dep';
+  if (/intereses pagados|gastos bancarios|comisiones bancarias/.test(s)) return 'gfin';
+  return 'oing';
+}
+
+/* Marca como subtotal la cuenta cuyo monto es la suma de las cuentas que le siguen dentro del mismo grupo. */
+function marcarSubtotales(hojas) {
+  for (let i = 0; i < hojas.length; i++) {
+    const a = hojas[i];
+    if (!a.valor) continue;
+    let s = 0;
+    for (let j = i + 1; j < hojas.length && hojas[j].grupoN === a.grupoN; j++) {
+      s += hojas[j].valor || 0;
+      if (Math.abs(s - a.valor) <= Math.max(1, Math.abs(a.valor) * 1e-9) && j > i) { a.subtotal = true; break; }
+    }
+  }
+}
+
+/* Analiza los renglones y devuelve balance y estado de resultados clasificados. */
+function analizarBalance(renglones) {
+  const textos = renglones.map((r) => r.texto || r.nombre);
+  const fecha = fechaDeBalance(textos);
+  let iEERR = renglones.findIndex((r) => /estado de resultados?|cuadro de resultados?|estado de (perdidas|ganancias)/.test(nb(r.nombre)));
+  if (iEERR < 0) {
+    const iPat = renglones.findIndex((r) => /^(total )?(del )?patrimonio( neto)?$/.test(nb(r.nombre)));
+    if (iPat >= 0) { const k = renglones.findIndex((r, i) => i > iPat && CABECERAS_EERR.some(([re, c]) => c === 'ventas' && re.test(nb(r.nombre)))); if (k >= 0) iEERR = k; }
+  }
+  const balR = iEERR >= 0 ? renglones.slice(0, iEERR) : renglones;
+  const eerrR = iEERR >= 0 ? renglones.slice(iEERR) : [];
+
+  // Balance
+  const lineas = [];
+  const ctx = { sec: null, sub: null, grp: null };
+  const totales = {};
+  let grupoN = 0, fin = false;
+  for (const r of balR) {
+    const s = nb(r.nombre);
+    if (!s || /^balance\b|^estado de situacion|^balance general/.test(s) || /^[\d ]+$/.test(s)) continue;
+    if (fin) continue;
+    const cab = CABECERAS_BAL.find(([re]) => re.test(s));
+    if (cab) {
+      const c = cab[1];
+      if (c.fin) { fin = true; continue; }
+      if (c.tipo === 'tot') {
+        ctx.sec = c.sec; ctx.sub = c.sub || null; ctx.grp = null; grupoN++;
+        const k = c.sec + (c.sub || '');
+        if (r.valor != null && totales[k] == null) totales[k] = r.valor;
+      } else { ctx.grp = c.grp; grupoN++; }
+      lineas.push({ nombre: r.nombre, valor: r.valor, nivel: c.tipo === 'tot' ? 1 : 2, sec: ctx.sec, sub: ctx.sub });
+      continue;
+    }
+    if (!ctx.sec) continue;
+    if (/^total\b/.test(s)) { lineas.push({ nombre: r.nombre, valor: r.valor, nivel: 2, sec: ctx.sec, sub: ctx.sub }); continue; }
+    lineas.push({ nombre: r.nombre, valor: r.valor ?? 0, nivel: 3, sec: ctx.sec, sub: ctx.sub, grupoN, rubro: rubroBalanceHoja(s, ctx) });
+  }
+  marcarSubtotales(lineas.filter((l) => l.nivel === 3));
+  for (const l of lineas) if (l.subtotal) l.nivel = 2.5;
+
+  // Estado de resultados
+  const eerr = [];
+  let grp = null, gN = 0;
+  for (const r of eerrR) {
+    const s = nb(r.nombre);
+    if (!s || /^(estado de|cuadro de)/.test(s) || /^(menos|mas)$/.test(s) || /^[\d ]+$/.test(s)) continue;
+    const cab = CABECERAS_EERR.find(([re]) => re.test(s));
+    if (cab) { grp = cab[1]; gN++; eerr.push({ nombre: r.nombre, valor: r.valor, nivel: 2 }); continue; }
+    if (esTotalEERR(s)) { eerr.push({ nombre: r.nombre, valor: r.valor, nivel: 1, total: true }); gN++; continue; }
+    if (r.valor == null) continue;
+    eerr.push({ nombre: r.nombre, valor: r.valor, nivel: 3, grupoN: gN, rubro: rubroEERRHoja(s, grp) });
+  }
+  marcarSubtotales(eerr.filter((l) => l.nivel === 3));
+  for (const l of eerr) if (l.subtotal) l.nivel = 2.5;
+  // Signo: en los grupos de gastos los montos restan aunque vengan en positivo.
+  for (const l of eerr) if (l.nivel === 3) {
+    const sg = RUBROS_EERR[l.rubro] ? RUBROS_EERR[l.rubro].signo : 0;
+    l.monto = sg < 0 ? -Math.abs(l.valor) : l.valor;
+  }
+  const netoDeclarado = (() => { const t = eerr.filter((l) => l.total && l.valor != null); const n = t.find((l) => /neta|del ejercicio|neto/.test(nb(l.nombre))); return n ? n.valor : t.length ? t[t.length - 1].valor : null; })();
+  return { fecha, lineas, totales, eerr, netoDeclarado };
+}
+
+/* Totales por rubro y controles de un balance analizado (en la moneda del archivo). */
+function resumenBalance(lineas, eerr) {
+  const rub = {}; for (const k of Object.keys(RUBROS_BAL)) rub[k] = 0;
+  for (const l of lineas) if (l.nivel === 3 && l.rubro) rub[l.rubro] += l.valor || 0;
+  const er = {}; for (const k of Object.keys(RUBROS_EERR)) er[k] = 0;
+  for (const l of eerr || []) if (l.nivel === 3 && l.rubro) er[l.rubro] += l.monto != null ? l.monto : l.valor || 0;
+  const A = ['caja', 'cxc', 'oc', 'inv', 'bu', 'oanc'], P = ['prov', 'prestCP', 'otras', 'iva', 'imp', 'prestLP', 'opnc'], E = ['cap', 'res', 'ra', 're'];
+  const s = (ks) => sum(ks.map((k) => rub[k]));
+  const t = { activo: s(A), ac: s(['caja', 'cxc', 'oc', 'inv']), anc: s(['bu', 'oanc']), pasivo: s(P), pc: s(['prov', 'prestCP', 'otras', 'iva', 'imp']), pnc: s(['prestLP', 'opnc']), pn: s(E) };
+  t.dif = t.activo - t.pasivo - t.pn;
+  t.rn = sum(Object.values(er));
+  return { rub, er, t };
+}
+
+/* Lee un archivo (PDF, Excel o texto) y devuelve el balance analizado. */
+async function leerArchivoBalance(file) {
+  const nombre = file.name.toLowerCase();
+  let renglones;
+  if (nombre.endsWith('.pdf')) renglones = (await textoDePDF(await file.arrayBuffer())).map((t) => ({ ...lineaDeTexto(t), texto: t })).filter((r) => r.nombre);
+  else if (/\.(xlsx|xlsm|xls|ods)$/.test(nombre)) { const XLSX = await loadXLSX(); renglones = filasDeExcel(XLSX, XLSX.read(await file.arrayBuffer(), { type: 'array' })); }
+  else renglones = (await file.text()).split(/\r?\n/).map((t) => ({ ...lineaDeTexto(t.replace(/[;\t]/g, ' ')), texto: t })).filter((r) => r && r.nombre);
+  return analizarBalance(renglones);
+}
+const leerTextoBalance = (texto) => analizarBalance(String(texto).split(/\r?\n/).map((t) => ({ ...lineaDeTexto(t.replace(/\t/g, ' ')), texto: t })).filter((r) => r && r.nombre));
+/* =====================================================================
    Filas de reportes (las usan las pantallas y la exportación a Excel)
    y gráficos en SVG.
    ===================================================================== */
@@ -2732,23 +3096,24 @@ function balanceRows(M) {
   const ratio = (a, b) => (Math.abs(b) > 0.5 ? a / b : null);
   return [
     { kind: 'head', label: 'Activo' },
-    row('Caja y bancos', (b) => b.caja, 'line', { fuente: 'Saldo final del flujo de caja' }),
-    row('Cuentas por cobrar', (b) => b.cxc, 'line', { fuente: 'Saldo inicial + ventas − cobranzas' }),
+    row('Disponibilidades', (b) => b.caja, 'line', { fuente: 'Caja y bancos: saldo final del flujo de caja' }),
+    row('Deudores por ventas', (b) => b.cxc, 'line', { fuente: 'Saldo inicial + ventas − cobranzas' }),
+    row('Otros créditos y activos corrientes', (b) => b.oc),
     row('Inventarios', (b) => b.inv, 'line', { fuente: 'Inicial + compras − costo de ventas' }),
-    row('Otros créditos', (b) => b.oc),
     row('Activo corriente', (b) => b.ac, 'sub'),
-    row('Bienes de uso (neto)', (b) => b.bu, 'line', { fuente: 'Inicial + inversiones − depreciaciones' }),
+    row('Propiedad, planta y equipo (neto)', (b) => b.bu, 'line', { fuente: 'Inicial + inversiones − depreciaciones' }),
     row('Otros activos no corrientes', (b) => b.oanc),
     row('Activo no corriente', (b) => b.anc, 'sub'),
     row('Total activo', (b) => b.activo, 'big'),
     { kind: 'head', label: 'Pasivo' },
-    row('Proveedores', (b) => b.prov, 'line', { fuente: 'Saldo inicial + compras − pagos' }),
-    row('Otras deudas', (b) => b.otras),
-    row('Préstamos · porción corriente', (b) => b.prestCP, 'line', { fuente: 'Amortizaciones de los próximos 12 meses' }),
+    row('Acreedores comerciales', (b) => b.prov, 'line', { fuente: 'Proveedores: saldo inicial + compras − pagos' }),
+    row('Deudas financieras a corto plazo', (b) => b.prestCP, 'line', { fuente: 'Préstamos: amortizaciones de los próximos 12 meses' }),
+    row('Otras cuentas por pagar', (b) => b.otras),
     row('IVA a pagar', (b) => b.iva, 'line', { fuente: 'Débito − crédito − pagos (negativo: saldo a favor)' }),
     row('Impuesto a la renta a pagar', (b) => b.imp, 'line', { fuente: 'Inicial + IRE devengado − pagos' }),
     row('Pasivo corriente', (b) => b.pc, 'sub'),
-    row('Préstamos · largo plazo', (b) => b.prestLP),
+    row('Deudas financieras a largo plazo', (b) => b.prestLP),
+    row('Otros pasivos no corrientes', (b) => b.opnc || 0),
     row('Pasivo no corriente', (b) => b.pnc, 'sub'),
     row('Total pasivo', (b) => b.pasivo, 'tot'),
     { kind: 'head', label: 'Patrimonio neto' },
@@ -2762,8 +3127,10 @@ function balanceRows(M) {
     { kind: 'head', label: 'Indicadores' },
     row('Liquidez corriente (veces)', (b) => ratio(b.ac, b.pc), 'ratio'),
     row('Prueba ácida (veces)', (b) => ratio(b.ac - b.inv, b.pc), 'ratio'),
-    row('Endeudamiento (pasivo / patrimonio)', (b) => ratio(b.pasivo, b.pn), 'ratio'),
+    row('Endeudamiento (pasivo / activo)', (b) => ratio(b.pasivo, b.activo), 'ratio'),
+    row('Pasivo / patrimonio (veces)', (b) => ratio(b.pasivo, b.pn), 'ratio'),
     row('Capital de trabajo', (b) => b.ac - b.pc, 'line'),
+    row('Deuda financiera neta', (b) => b.prestCP + b.prestLP - b.caja, 'line', { fuente: 'Deudas financieras − disponibilidades' }),
   ];
 }
 
@@ -3534,13 +3901,13 @@ function viewEERR(M) {
   ${tabla}`;
 }
 
-function viewBalance(M) {
+function tablaBalanceProyectado(M) {
   const rows = balanceRows(M);
   const dif = M.balMes.length ? M.balMes[M.balMes.length - 1].dif : 0;
   const cuadra = Math.abs(M.balIni.dif) < 1 && Math.abs(dif) < 1;
   const estado = cuadra ? chip('good', 'Activo = pasivo + patrimonio en todos los meses') : chip('crit', `Diferencia ${fmt(M.balIni.dif)} desde el balance inicial`);
-  const tools = `<button class="btn" data-action="balance-editar">${icon('edit', 15)}Balance inicial</button>`;
-  const head = `<tr><th class="lbl">Rubro</th><th class="yr">Inicial<br><span class="muted" style="font-weight:500">${fmtDate(addDays(M.cal.start, -1))}</span></th>${M.months.map((m) => `<th class="${m === M.curMonth ? 'cur' : ''}">${esc(mLabel(m))}</th>`).join('')}</tr>`;
+  const refIdx = M.ancla ? M.ancla.refIdx : null;
+  const head = `<tr><th class="lbl">Rubro</th><th class="yr">${refIdx === -1 ? 'Real' : 'Inicial'}<br><span class="muted" style="font-weight:500">${fmtDate(addDays(M.cal.start, -1))}</span></th>${M.months.map((m, mi) => `<th class="${m === M.curMonth ? 'cur' : ''}"${mi === refIdx ? ' title="Balance real importado"' : ''}>${esc(mLabel(m))}${mi === refIdx ? '<br><span class="chip chip-good" style="font-size:10.5px;padding:1px 6px">Real</span>' : ''}</th>`).join('')}</tr>`;
   let body = '';
   for (const r of rows) {
     if (r.kind === 'head') { body += `<tr class="head"><td class="lbl">${esc(r.label)}</td><td colspan="${M.nM + 1}"></td></tr>`; continue; }
@@ -3552,8 +3919,7 @@ function viewBalance(M) {
     };
     body += `<tr class="${cls}"><td class="lbl"${r.fuente ? ` title="${esc(r.fuente)}"` : ''}>${esc(r.label)}${r.fuente ? `<div class="muted small" style="font-weight:400">${esc(r.fuente)}</div>` : ''}</td>${r.vals.map(cell).join('')}</tr>`;
   }
-  return `${pageHead('Balance proyectado', 'Balance al cierre de cada mes, armado con el flujo (real + proyección), las cuentas por cobrar y el EERR proyectado. Estructura base: se puede adaptar al formato de balance de la empresa.', tools)}
-  <div class="toolbar">${estado}<span class="spacer"></span><span class="small ink2">Préstamos: la porción corriente son las amortizaciones de capital previstas en los 12 meses siguientes.</span></div>
+  return `<div class="toolbar">${estado}<span class="spacer"></span><span class="small ink2">Préstamos: la porción corriente son las amortizaciones de capital previstas en los 12 meses siguientes.</span></div>
   <div class="tbl-wrap" data-scroll="balance"><table class="rep"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
 }
 
@@ -3913,7 +4279,7 @@ function viewPrecision(M) {
    ===================================================================== */
 
 const VIEWS = { tablero: viewTablero, flujo: viewFlujo, ventas: viewVentas, compras: viewCompras, bancos: viewBancos, prestamos: viewPrestamos, plan: viewPlan, produccion: viewProduccion, eerr: viewEERR, balance: viewBalance, indicadores: viewIndicadores, escenarios: viewEscenarios, config: viewConfig };
-const NAV = [['tablero', 'Tablero'], ['-', 'Operación'], ['flujo', 'Flujo de caja'], ['ventas', 'Ventas y cobranzas'], ['compras', 'Compras y pagos'], ['bancos', 'Bancos'], ['prestamos', 'Préstamos'], ['-', 'Planificación'], ['plan', 'Plan comercial'], ['produccion', 'Producción y stock'], ['escenarios', 'Escenarios'], ['-', 'Resultados'], ['eerr', 'Presupuesto EERR'], ['balance', 'Balance proyectado'], ['indicadores', 'Indicadores'], ['-', ''], ['config', 'Configuración']];
+const NAV = [['tablero', 'Tablero'], ['-', 'Operación'], ['flujo', 'Flujo de caja'], ['ventas', 'Ventas y cobranzas'], ['compras', 'Compras y pagos'], ['bancos', 'Bancos'], ['prestamos', 'Préstamos'], ['-', 'Planificación'], ['plan', 'Plan comercial'], ['produccion', 'Producción y stock'], ['escenarios', 'Escenarios'], ['-', 'Resultados'], ['eerr', 'Presupuesto EERR'], ['balance', 'Balance'], ['indicadores', 'Indicadores'], ['-', ''], ['config', 'Configuración']];
 
 function model() { if (!MODEL) MODEL = compute(S); return MODEL; }
 
@@ -5490,6 +5856,289 @@ Object.assign(ACCIONES_R3, {
     modalUsuarios();
   },
 });
+/* =====================================================================
+   Balance: proyectado, balances reales importados y análisis del balance
+   ===================================================================== */
+const balPorId = (id) => (S.balancesReales || []).find((b) => b.id === id);
+const balOrdenados = () => (S.balancesReales || []).slice().sort((a, b) => b.fecha.localeCompare(a.fecha));
+const fmtB = (b, n, opts) => `${MONEDAS[b.moneda] || ''} ${fmt(n, opts)}`;
+const opcionesRubro = (sec, cur) => Object.entries(RUBROS_BAL).filter(([, r]) => !sec || r.sec === sec).map(([k, r]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${esc(r.label)}</option>`).join('');
+const SEC_BAL = { A: 'Activo', P: 'Pasivo', E: 'Patrimonio neto' };
+
+function viewBalance(M) {
+  const tab = UI.balTab || 'proy';
+  const tools = `<button class="btn" data-action="balance-importar">${icon('descarga', 15)}Importar balance real</button><button class="btn" data-action="balance-editar">${icon('edit', 15)}Balance inicial</button>`;
+  let contenido;
+  if (tab === 'real') contenido = viewBalanceReal(M);
+  else if (tab === 'analisis') contenido = viewAnalisisBalance(M);
+  else contenido = `${notaAncla(M)}${tablaBalanceProyectado(M)}`;
+  const n = (S.balancesReales || []).length;
+  return `${pageHead('Balance', 'Balance proyectado al cierre de cada mes. Importando el balance real de la empresa (PDF o Excel), la proyección parte de esos saldos y se puede leer con indicadores.', tools)}
+  ${tabs('bal-tab', tab, [['proy', 'Proyectado'], ['real', `Balances reales${n ? ` (${n})` : ''}`], ['analisis', 'Análisis del balance']])}
+  ${contenido}`;
+}
+
+/* Nota sobre el balance real que ancla la proyección, con la diferencia de caja contra el flujo. */
+function notaAncla(M) {
+  const a = M.ancla;
+  if (!a) {
+    if ((S.balancesReales || []).length) return `<div class="inline-note">${chip('warn', 'Fuera del período')} Los balances importados son de fechas fuera del período del flujo (${esc(mLabel(M.months[0]))} a ${esc(mLabel(M.months[M.nM - 1]))}): se usan para el análisis, pero no ajustan la proyección.</div>`;
+    return `<div class="inline-note">${chip('info', 'Sugerencia')} Importá el último balance de la empresa (PDF o Excel) para que la proyección parta de los saldos reales.</div>`;
+  }
+  const mesTxt = a.refIdx >= 0 ? `desde ${esc(mLabel(M.months[a.refIdx]))}` : 'desde el inicio';
+  const difCaja = a.off.caja;
+  let caja = '';
+  if (Math.abs(difCaja) > 0.5) {
+    caja = a.refIdx >= 0
+      ? ` La caja del flujo al cierre de ${esc(mLabel(M.months[a.refIdx]))} es ${money(a.comp.caja)} y las disponibilidades del balance, ${money(a.real.caja)} (diferencia ${money(difCaja, { sign: true })}). <button class="btn btn-sm" data-action="balance-ajustar-caja">Ajustar el flujo a la caja real</button>`
+      : ` El saldo inicial del flujo es ${money(a.comp.caja)} y las disponibilidades del balance, ${money(a.real.caja)}. <button class="btn btn-sm" data-action="balance-ajustar-caja">Usar las disponibilidades como saldo inicial</button>`;
+  }
+  return `<div class="inline-note">${chip('good', 'Balance real')} La proyección parte del balance al ${fmtDate(a.b.fecha)}${a.b.archivo ? ` («${esc(a.b.archivo)}»)` : ''} ${mesTxt} y le suma los movimientos proyectados${a.b.moneda !== monedaBase() ? `, convertido a ${fmt(a.b.tc)} Gs. por US$` : ''}. Los meses anteriores son estimados.${caja}</div>`;
+}
+
+/* ---------- balances reales importados ---------- */
+function viewBalanceReal(M) {
+  const lista = balOrdenados();
+  if (!lista.length) return `<div class="empty">Todavía no hay balances importados. Usá «Importar balance real» y elegí el PDF o el Excel del balance (por ejemplo, el balance provisorio del contador).</div>`;
+  const b = balPorId(UI.balSel) || lista[0];
+  const r = resumenBalance(b.lineas, b.eerr);
+  const sel = lista.length > 1 ? `<select id="bal-sel" style="width:auto" aria-label="Balance">${lista.map((x) => `<option value="${x.id}" ${x.id === b.id ? 'selected' : ''}>Al ${fmtDate(x.fecha)}${x.archivo ? ` · ${esc(x.archivo)}` : ''}</option>`).join('')}</select>` : '';
+  const enUso = M.ancla && M.ancla.b.id === b.id;
+  const ctl = controlesBalance(b, r);
+  const filas = b.lineas.map((l, i) => {
+    if (l.nivel === 1) return `<tr class="sub"><td class="wrap"><b>${esc(l.nombre)}</b></td><td class="n"><b>${l.valor == null ? '' : fmt(l.valor)}</b></td><td></td></tr>`;
+    if (l.nivel === 2 || l.nivel === 2.5) return `<tr><td class="wrap"><span style="font-weight:600">${esc(l.nombre)}</span>${l.nivel === 2.5 ? ' <span class="muted small">(subtotal)</span>' : ''}</td><td class="n" style="font-weight:600">${l.valor == null ? '' : fmt(l.valor)}</td><td></td></tr>`;
+    return `<tr><td class="wrap" style="padding-left:22px">${esc(l.nombre)}</td><td class="n ${l.valor < 0 ? 'neg' : ''}">${fmt(l.valor, { dash: true })}</td><td><select data-bal-rubro="${b.id}|${i}" aria-label="Rubro de ${esc(l.nombre)}" style="width:auto;max-width:100%">${opcionesRubro(l.sec, l.rubro)}</select></td></tr>`;
+  }).join('');
+  const filasE = (b.eerr || []).map((l, i) => {
+    if (l.nivel !== 3) return `<tr class="${l.total ? 'sub' : ''}"><td class="wrap" style="font-weight:600">${esc(l.nombre)}${l.nivel === 2.5 ? ' <span class="muted small">(subtotal)</span>' : ''}</td><td class="n" style="font-weight:600">${l.valor == null ? '' : fmt(l.valor)}</td><td></td></tr>`;
+    return `<tr><td class="wrap" style="padding-left:22px">${esc(l.nombre)}</td><td class="n ${l.monto < 0 ? 'neg' : ''}">${fmt(l.monto, { dash: true })}</td><td><select data-eerr-rubro="${b.id}|${i}" aria-label="Rubro de ${esc(l.nombre)}" style="width:auto">${Object.entries(RUBROS_EERR).map(([k, x]) => `<option value="${k}" ${k === l.rubro ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}</select></td></tr>`;
+  }).join('');
+  return `<section class="panel"><div class="panel-head"><div><h2>Balance al ${fmtDate(b.fecha)}</h2><div class="sub">${b.archivo ? `${esc(b.archivo)} · ` : ''}montos en ${MONEDAS[b.moneda]}${b.moneda !== monedaBase() ? ` · se convierte a ${fmt(b.tc)} Gs. por US$` : ''} · ${enUso ? 'es el balance que usa la proyección' : 'no ajusta la proyección (hay otro más reciente o está fuera del período)'}</div></div><div class="toolbar">${sel}<button class="btn btn-sm btn-ghost btn-danger" data-action="balance-real-eliminar" data-id="${b.id}">${icon('trash', 14)}Eliminar</button></div></div>
+    <div class="panel-body">${ctl}
+    <p class="small muted" style="margin:10px 0">Cada cuenta va a un rubro del balance proyectado. La herramienta lo propone según el grupo y el nombre; si alguno no corresponde, cambialo en la columna «Rubro».</p>
+    <div class="cols">
+      <div class="tbl-wrap"><table class="list"><thead><tr><th>Cuenta</th><th class="n">${MONEDAS[b.moneda]}</th><th>Rubro</th></tr></thead><tbody>${filas}</tbody></table></div>
+      <div>${filasE ? `<div class="tbl-wrap"><table class="list"><thead><tr><th>Estado de resultados</th><th class="n">${MONEDAS[b.moneda]}</th><th>Rubro</th></tr></thead><tbody>${filasE}</tbody></table></div>` : '<div class="empty">El archivo no tenía estado de resultados.</div>'}
+      <div class="tbl-wrap" style="margin-top:14px"><table class="list"><thead><tr><th>Rubro del balance</th><th class="n">${MONEDAS[b.moneda]}</th></tr></thead><tbody>${Object.entries(RUBROS_BAL).map(([k, x]) => `<tr><td>${esc(x.label)}</td><td class="n">${fmt(r.rub[k], { dash: true })}</td></tr>`).join('')}</tbody></table></div></div>
+    </div></div></section>`;
+}
+
+/* Controles: totales del archivo contra la suma de sus cuentas y cuadre del balance. */
+function controlesBalance(b, r) {
+  const t = b.totales || {};
+  const fila = (label, suma, decl) => {
+    const ok = decl == null || Math.abs(suma - decl) <= Math.max(1, Math.abs(decl) * 1e-7);
+    return `<span class="chip ${ok ? 'chip-good' : 'chip-crit'}" title="${decl == null ? 'El archivo no trae el total' : `Total del archivo: ${fmt(decl)}`}">${esc(label)} ${fmt(suma)}${ok ? '' : ` ≠ ${fmt(decl)}`}</span>`;
+  };
+  const cuadra = Math.abs(r.t.dif) <= Math.max(1, Math.abs(r.t.activo) * 1e-7);
+  const rnBal = r.rub.re;
+  const rnOk = !b.eerr || !b.eerr.length || Math.abs(r.t.rn - rnBal) <= Math.max(1, Math.abs(rnBal) * 1e-7);
+  return `<div class="toolbar ctl-bal" style="gap:6px;flex-wrap:wrap">${fila('Activo', r.t.activo, t.A)}${fila('Pasivo', r.t.pasivo, t.P)}${fila('Patrimonio', r.t.pn, t.E)}
+    <span class="chip ${cuadra ? 'chip-good' : 'chip-crit'}">${cuadra ? 'Activo = pasivo + patrimonio' : `No cuadra: diferencia ${fmt(r.t.dif)}`}</span>
+    ${b.eerr && b.eerr.length ? `<span class="chip ${rnOk ? 'chip-good' : 'chip-warn'}">${rnOk ? `Resultado del EERR = resultado del balance (${fmt(r.t.rn)})` : `Resultado del EERR ${fmt(r.t.rn)} ≠ balance ${fmt(rnBal)}`}</span>` : ''}</div>`;
+}
+
+/* ---------- análisis del balance ---------- */
+function analisisBalance(b) {
+  const r = resumenBalance(b.lineas, b.eerr);
+  const R = r.rub, E = r.er, T = r.t;
+  const q = (a, d) => (Math.abs(d) > 0.5 ? a / d : null);
+  const anio = b.fecha.slice(0, 4);
+  const dias = Math.max(1, daysBetween(`${anio}-01-01`, b.fecha) + 1);
+  const iva = 1 + (Number(S.config.ivaVentas) || 10) / 100;
+  const ventas = E.ventas, costo = -E.cmv;
+  const operativo = E.ventas + E.cmv + E.gcom + E.gadm + E.dep;
+  const ebitda = operativo - E.dep;
+  const deudaFin = R.prestCP + R.prestLP;
+  const hayEERR = b.eerr && b.eerr.length && Math.abs(ventas) > 0.5;
+  const out = {
+    dias, hayEERR,
+    liquidez: q(T.ac, T.pc), acida: q(T.ac - R.inv, T.pc), inmediata: q(R.caja, T.pc), ctrabajo: T.ac - T.pc,
+    endeud: q(T.pasivo, T.activo), pasivoPn: q(T.pasivo, T.pn), deudaFin, deudaFinNeta: deudaFin - R.caja, deudaFinPn: q(deudaFin, T.pn), solvencia: q(T.activo, T.pasivo),
+    ventas, costo, margenBruto: hayEERR ? q(ventas - costo, ventas) : null, operativo, margenOp: hayEERR ? q(operativo, ventas) : null, ebitda,
+    gfin: -E.gfin, coberturaInt: q(ebitda, -E.gfin), dcambio: E.dcambio, rn: T.rn, rnSinCambio: T.rn - E.dcambio, margenNeto: hayEERR ? q(T.rn, ventas) : null,
+    roe: q(T.rn * 365 / dias, T.pn), roa: q(T.rn * 365 / dias, T.activo),
+    diasCobro: hayEERR ? q(R.cxc, ventas * iva) * dias : null, diasInv: hayEERR && costo > 0.5 ? q(R.inv, costo) * dias : null, diasPago: hayEERR && costo > 0.5 ? q(R.prov, costo * iva) * dias : null,
+    R, E, T,
+  };
+  out.ciclo = out.diasCobro != null && out.diasInv != null && out.diasPago != null ? out.diasCobro + out.diasInv - out.diasPago : null;
+  return out;
+}
+function viewAnalisisBalance(M) {
+  const lista = balOrdenados();
+  if (!lista.length) return `<div class="empty">Importá un balance real para ver su análisis: liquidez, endeudamiento, rentabilidad, días de cobro, inventario y pago, y una lectura en palabras.</div>`;
+  const b = balPorId(UI.balSel) || lista[0];
+  const a = analisisBalance(b);
+  const sim = MONEDAS[b.moneda];
+  const x2 = (v) => (v == null ? '–' : fmt(v, { dec: 2 }));
+  const pct = (v) => (v == null ? '–' : fmtPct(v));
+  const d0 = (v) => (v == null ? '–' : `${fmt(v)} días`);
+  const sem = (v, bueno, regular, mayorMejor = true) => (v == null ? '' : (mayorMejor ? v >= bueno : v <= bueno) ? chip('good', 'Bien') : (mayorMejor ? v >= regular : v <= regular) ? chip('warn', 'Atención') : chip('crit', 'Crítico'));
+  const ind = (titulo, valor, chipHtml, lectura) => `<tr><td class="wrap"><b>${esc(titulo)}</b><div class="muted small">${lectura}</div></td><td class="n" style="white-space:nowrap"><b>${valor}</b></td><td>${chipHtml}</td></tr>`;
+  const bloques = [
+    ['Liquidez', [
+      ind('Liquidez corriente', `${x2(a.liquidez)} veces`, sem(a.liquidez, 1.5, 1), `Por cada ${sim} 1 de deuda de corto plazo hay ${sim} ${x2(a.liquidez)} de activo corriente.`),
+      ind('Prueba ácida', `${x2(a.acida)} veces`, sem(a.acida, 1, 0.7), 'Lo mismo, sin contar los inventarios (lo que se puede cobrar o ya está en caja).'),
+      ind('Liquidez inmediata', `${x2(a.inmediata)} veces`, sem(a.inmediata, 0.3, 0.1), 'Disponibilidades sobre el pasivo corriente.'),
+      ind('Capital de trabajo', fmtB(b, a.ctrabajo), sem(a.ctrabajo, 0, -1e-9), 'Activo corriente − pasivo corriente.'),
+    ]],
+    ['Endeudamiento', [
+      ind('Endeudamiento', pct(a.endeud), sem(a.endeud, 0.6, 0.75, false), `De cada ${sim} 100 de activo, ${a.endeud == null ? '–' : fmt(a.endeud * 100)} están financiados con deuda.`),
+      ind('Pasivo / patrimonio', `${x2(a.pasivoPn)} veces`, sem(a.pasivoPn, 1.5, 3, false), 'Cuánto deben por cada unidad de capital propio.'),
+      ind('Deuda financiera neta', fmtB(b, a.deudaFinNeta), '', `Préstamos (${fmtB(b, a.deudaFin)}) menos disponibilidades.`),
+      ind('Deuda financiera / patrimonio', `${x2(a.deudaFinPn)} veces`, sem(a.deudaFinPn, 1, 2, false), 'Solo préstamos bancarios y financieros.'),
+    ]],
+  ];
+  if (a.hayEERR) {
+    bloques.push(['Rentabilidad', [
+      ind('Margen bruto', pct(a.margenBruto), sem(a.margenBruto, 0.25, 0.15), `Ventas ${fmtB(b, a.ventas)} − costo ${fmtB(b, a.costo)}.`),
+      ind('Resultado operativo', fmtB(b, a.operativo), sem(a.operativo, 0, -1e-9), `Margen bruto − gastos de comercialización, administración y depreciaciones (${pct(a.margenOp)} de las ventas). No incluye intereses ni diferencia de cambio.`),
+      ind('EBITDA', fmtB(b, a.ebitda), sem(a.ebitda, 0, -1e-9), 'Resultado operativo antes de depreciaciones: lo que genera la operación.'),
+      ind('Cobertura de intereses', `${x2(a.coberturaInt)} veces`, sem(a.coberturaInt, 3, 1.5), `EBITDA sobre gastos financieros (${fmtB(b, a.gfin)}).`),
+      ind('Resultado neto', fmtB(b, a.rn), sem(a.rn, 0, -1e-9), `Margen neto ${pct(a.margenNeto)}. ${Math.abs(a.dcambio) > 0.5 ? `Incluye ${fmtB(b, a.dcambio, { sign: true })} de diferencia de cambio neta: sin ella, el resultado sería ${fmtB(b, a.rnSinCambio)}.` : ''}`),
+      ind('Rentabilidad del patrimonio (ROE anual)', pct(a.roe), sem(a.roe, 0.12, 0), `Resultado de ${a.dias} días llevado a un año, sobre el patrimonio.`),
+    ]]);
+    bloques.push(['Ciclo de caja', [
+      ind('Días de cobro', d0(a.diasCobro), sem(a.diasCobro, 60, 90, false), 'Deudores por ventas sobre ventas con IVA del ejercicio.'),
+      ind('Días de inventario', d0(a.diasInv), sem(a.diasInv, 90, 150, false), 'Inventarios sobre el costo de ventas.'),
+      ind('Días de pago', d0(a.diasPago), '', 'Acreedores comerciales sobre el costo con IVA (aproximación de las compras).'),
+      ind('Ciclo de caja', d0(a.ciclo), sem(a.ciclo, 60, 120, false), 'Cobro + inventario − pago: días que la empresa financia con capital propio o deuda.'),
+    ]]);
+  }
+  const lectura = lecturaBalance(b, a);
+  const sel = lista.length > 1 ? `<select id="bal-sel" style="width:auto" aria-label="Balance">${lista.map((x) => `<option value="${x.id}" ${x.id === b.id ? 'selected' : ''}>Al ${fmtDate(x.fecha)}</option>`).join('')}</select>` : '';
+  return `<section class="panel"><div class="panel-head"><div><h2>Lectura del balance al ${fmtDate(b.fecha)}</h2><div class="sub">Montos en ${sim}${a.hayEERR ? ` · estado de resultados de ${a.dias} días (desde el 1 de enero)` : ' · sin estado de resultados: solo indicadores del balance'}</div></div>${sel}</div><div class="panel-body"><ul class="lectura">${lectura.map((t) => `<li>${t}</li>`).join('')}</ul></div></section>
+  <div class="cols">${bloques.map(([t, filas]) => `<section class="panel"><div class="panel-head"><h2>${esc(t)}</h2></div><div class="panel-body"><div class="tbl-wrap"><table class="list"><tbody>${filas.join('')}</tbody></table></div></div></section>`).join('')}</div>
+  <p class="small muted">Referencias orientativas (dependen del rubro): liquidez corriente mayor a 1,5; prueba ácida mayor a 1; endeudamiento menor a 60 %; cobertura de intereses mayor a 3 veces.</p>`;
+}
+/* Lectura en palabras de los puntos principales. */
+function lecturaBalance(b, a) {
+  const sim = MONEDAS[b.moneda];
+  const out = [];
+  if (a.liquidez != null) out.push(a.liquidez >= 1.5 ? `<b>Liquidez holgada:</b> el activo corriente cubre ${fmt(a.liquidez, { dec: 1 })} veces las deudas de corto plazo.` : a.liquidez >= 1 ? `<b>Liquidez justa:</b> el activo corriente cubre ${fmt(a.liquidez, { dec: 2 })} veces el pasivo corriente${a.acida != null && a.acida < 1 ? `, pero sin inventarios baja a ${fmt(a.acida, { dec: 2 })}: depende de vender el stock para pagar` : ''}.` : `<b>Liquidez insuficiente:</b> el activo corriente no alcanza para el pasivo corriente (${fmt(a.liquidez, { dec: 2 })} veces).`);
+  if (a.endeud != null) out.push(`<b>Endeudamiento ${a.endeud > 0.75 ? 'alto' : a.endeud > 0.6 ? 'moderado' : 'bajo'}:</b> el ${fmt(a.endeud * 100)} % del activo está financiado con deuda; el pasivo es ${fmt(a.pasivoPn, { dec: 1 })} veces el patrimonio. La deuda financiera neta es ${sim} ${fmt(a.deudaFinNeta)}${a.R.prestLP > a.R.prestCP ? ', mayormente de largo plazo' : ''}.`);
+  if (a.hayEERR) {
+    out.push(`<b>Operación:</b> margen bruto de ${fmtPct(a.margenBruto)}; ${a.operativo >= 0 ? `la operación deja ${sim} ${fmt(a.operativo)} antes de intereses y diferencia de cambio` : `la operación pierde ${sim} ${fmt(-a.operativo)} antes de intereses y diferencia de cambio`} (EBITDA ${sim} ${fmt(a.ebitda)}).`);
+    if (a.gfin > 0.5) out.push(`<b>Costo financiero:</b> los gastos financieros (${sim} ${fmt(a.gfin)}) ${a.coberturaInt != null && a.coberturaInt < 1 ? 'superan lo que genera la operación' : `se cubren ${fmt(a.coberturaInt, { dec: 1 })} veces con el EBITDA`}.`);
+    if (Math.abs(a.dcambio) > Math.abs(a.rn) * 0.5 && Math.abs(a.dcambio) > 0.5) out.push(`<b>Diferencia de cambio:</b> el resultado del período (${sim} ${fmt(a.rn)}) depende de la diferencia de cambio neta (${sim} ${fmt(a.dcambio, { sign: true })}). Sin ella, el resultado sería ${sim} ${fmt(a.rnSinCambio)}.`);
+    if (a.ciclo != null) out.push(`<b>Ciclo de caja:</b> cobra a ${fmt(a.diasCobro)} días, tiene inventario para ${fmt(a.diasInv)} días y paga a ${fmt(a.diasPago)} días: financia ${fmt(Math.max(0, a.ciclo))} días de operación.`);
+  }
+  if (a.T.pn < 0) out.push('<b>Patrimonio negativo:</b> las pérdidas acumuladas superan el capital.');
+  else if (a.R.ra < 0 && Math.abs(a.R.ra) > a.T.pn * 0.1) out.push(`<b>Pérdidas acumuladas:</b> ${sim} ${fmt(-a.R.ra)} de resultados acumulados negativos.`);
+  return out;
+}
+
+/* ---------- importar ---------- */
+function modalImportarBalance(an, archivo) {
+  const M = model();
+  const maxAbs = Math.max(0, ...an.lineas.map((l) => Math.abs(l.valor || 0)));
+  const monDef = monedaBase() === 'USD' && maxAbs > 5e7 ? 'PYG' : monedaBase();
+  const fecha0 = an.fecha || addDays(M.cal.start, -1);
+  const hojas = an.lineas.filter((l) => l.nivel === 3).length;
+  const m = openModal({
+    title: 'Importar balance real', wide: true,
+    sub: `${esc(archivo)} · ${hojas} cuentas${an.eerr.length ? ` · estado de resultados con ${an.eerr.filter((l) => l.nivel === 3).length} cuentas` : ''}. Revisá la fecha, la moneda y los controles; el detalle por cuenta se puede corregir después en «Balances reales».`,
+    body: `<div class="form-grid">
+      <div class="field"><label for="bi-fecha">Fecha del balance</label><input type="date" id="bi-fecha" value="${fecha0}"></div>
+      <div class="field"><label for="bi-moneda">Moneda del balance</label><select id="bi-moneda">${Object.entries(MONEDAS).map(([k, v]) => `<option value="${k}" ${k === monDef ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+      <div class="field" id="bi-tc-wrap"><label for="bi-tc">Tipo de cambio (Gs. por US$)</label><input type="text" inputmode="decimal" id="bi-tc" class="money" value="${esc(rawNum(S.empresa.tc))}"><span class="hint">Para pasar el balance a la moneda de los reportes (${MONEDAS[monedaBase()]}).</span></div>
+    </div>
+    <div id="bi-ctl"></div>
+    <div class="inline-note" id="bi-prev" aria-live="polite"></div>
+    <details style="margin-top:10px"><summary class="small">Ver cómo se clasificó cada cuenta</summary><div class="tbl-wrap" style="max-height:340px;margin-top:8px"><table class="list"><tbody>${an.lineas.filter((l) => l.nivel === 3 && l.valor).map((l) => `<tr><td class="wrap">${esc(l.nombre)}</td><td class="n">${fmt(l.valor)}</td><td class="small muted">${esc(RUBROS_BAL[l.rubro] ? RUBROS_BAL[l.rubro].label : '—')}</td></tr>`).join('')}</tbody></table></div></details>
+    <div class="err" id="bi-err" role="alert"></div>`,
+    foot: `<button class="btn" data-action="modal-cerrar">Cancelar</button><button class="btn btn-primary" id="bi-ok">Guardar balance</button>`,
+  });
+  const leer = () => {
+    const fecha = val(m, 'bi-fecha'), moneda = val(m, 'bi-moneda'), tc = numVal(m, 'bi-tc');
+    return { fecha, moneda, tc: moneda === monedaBase() ? null : tc };
+  };
+  const upd = () => {
+    const x = leer();
+    m.querySelector('#bi-tc-wrap').hidden = x.moneda === monedaBase();
+    const b = { ...an, ...x, archivo };
+    const r = resumenBalance(an.lineas, an.eerr);
+    m.querySelector('#bi-ctl').innerHTML = controlesBalance(b, r);
+    const prev = m.querySelector('#bi-prev');
+    if (!isISODate(x.fecha)) { prev.textContent = 'Indicá la fecha del balance.'; return; }
+    const mes = monthOf(x.fecha);
+    const f = factorBase(x.moneda, x.tc);
+    const dentro = mes >= addMonths(M.months[0], -1) && mes <= M.months[M.nM - 1];
+    prev.innerHTML = `Activo ${fmt(r.t.activo)} ${MONEDAS[x.moneda]}${x.moneda !== monedaBase() && isNum(x.tc) && x.tc > 0 ? ` = ${money(r.t.activo * f)}` : ''}. ${dentro ? `<b>La proyección va a partir de este balance desde ${esc(mLabel(mes))}</b>: cada mes siguiente suma los movimientos del flujo, las ventas, las compras y el EERR proyectados.` : `Está fuera del período del flujo (${esc(mLabel(M.months[0]))} a ${esc(mLabel(M.months[M.nM - 1]))}): se guarda para el análisis, sin ajustar la proyección.`}`;
+  };
+  m.addEventListener('input', upd); m.addEventListener('change', upd); upd();
+  m.querySelector('#bi-ok').addEventListener('click', () => {
+    const x = leer();
+    const err = m.querySelector('#bi-err');
+    if (!isISODate(x.fecha)) { err.textContent = 'Indicá la fecha del balance.'; return; }
+    if (x.moneda !== monedaBase() && !(isNum(x.tc) && x.tc > 0)) { err.textContent = 'Indicá el tipo de cambio.'; return; }
+    if (!hojas) { err.textContent = 'No encontré cuentas con montos en el archivo.'; return; }
+    const reg = { id: uid('bal'), fecha: x.fecha, mes: monthOf(x.fecha), moneda: x.moneda, tc: x.tc, archivo, importado: hoy(), totales: an.totales, netoDeclarado: an.netoDeclarado, lineas: an.lineas, eerr: an.eerr };
+    commit((st) => { st.balancesReales = (st.balancesReales || []).filter((b) => b.fecha !== reg.fecha); st.balancesReales.push(reg); });
+    UI.balSel = reg.id; UI.balTab = 'analisis';
+    closeModal();
+    toast(`Balance al ${fmtDate(reg.fecha)} importado.`);
+  });
+}
+async function importarBalanceArchivo(file) {
+  let an;
+  try { an = await leerArchivoBalance(file); } catch (e) { toast(`No pude leer el balance: ${e.message}`, true); return; }
+  if (!an.lineas.some((l) => l.nivel === 3)) { toast('No encontré un balance en el archivo: tiene que tener cuentas con montos y los títulos ACTIVO, PASIVO y PATRIMONIO.', true); return; }
+  modalImportarBalance(an, file.name);
+}
+function modalPegarBalance() {
+  const m = openModal({
+    title: 'Pegar balance', wide: true,
+    sub: 'Copiá el balance (y si querés el estado de resultados) desde el PDF, el Excel o el sistema contable y pegalo acá: una cuenta por renglón con su monto al final.',
+    body: '<textarea id="pb-texto" rows="14" style="height:auto;width:100%;font:13px var(--font-num)" placeholder="ACTIVO 1.250.000.000\nACTIVO CORRIENTE 700.000.000\nDISPONIBILIDADES 80.000.000\nBANCOS 75.000.000\n…"></textarea><div class="err" id="pb-err" role="alert"></div>',
+    foot: '<button class="btn" data-action="modal-cerrar">Cancelar</button><button class="btn btn-primary" id="pb-ok">Leer</button>',
+  });
+  m.querySelector('#pb-ok').addEventListener('click', () => {
+    const an = leerTextoBalance(val(m, 'pb-texto'));
+    if (!an.lineas.some((l) => l.nivel === 3)) { m.querySelector('#pb-err').textContent = 'No encontré un balance: tiene que tener los títulos ACTIVO, PASIVO y PATRIMONIO y montos al final de cada renglón.'; return; }
+    closeModal();
+    modalImportarBalance(an, 'Texto pegado');
+  });
+}
+function modalElegirBalance() {
+  openModal({
+    title: 'Importar balance real',
+    sub: 'El balance de la empresa a una fecha (por ejemplo, el balance provisorio del contador). Se lee el balance y, si viene, el estado de resultados.',
+    body: `<div class="toolbar" style="flex-direction:column;align-items:stretch;gap:8px"><button class="btn" data-action="balance-archivo">${icon('descarga', 15)}Elegir archivo PDF o Excel</button><button class="btn" data-action="balance-pegar">Pegar el texto del balance</button></div>`,
+    foot: '<button class="btn" data-action="modal-cerrar">Cancelar</button>',
+  });
+}
+
+Object.assign(ACCIONES_R3, {
+  'bal-tab': (el) => { UI.balTab = el.dataset.v; render(); },
+  'balance-importar': () => modalElegirBalance(),
+  'balance-pegar': () => { closeModal(); modalPegarBalance(); },
+  'balance-archivo': () => {
+    closeModal();
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = '.pdf,.xlsx,.xls,.xlsm,.ods,.csv,.txt,application/pdf';
+    inp.id = 'file-balance';
+    inp.addEventListener('change', () => { if (inp.files[0]) importarBalanceArchivo(inp.files[0]); inp.remove(); });
+    inp.hidden = true;
+    document.body.append(inp);
+    inp.click();
+  },
+  'balance-real-eliminar': async (el) => {
+    const b = balPorId(el.dataset.id);
+    const ok = await confirmar({ title: 'Eliminar balance', text: `Se elimina el balance al ${fmtDate(b.fecha)}. Si era el que usaba la proyección, el balance proyectado vuelve a armarse desde el balance inicial.`, ok: 'Eliminar', danger: true });
+    if (ok) { commit((st) => { st.balancesReales = st.balancesReales.filter((x) => x.id !== b.id); }); UI.balSel = null; }
+  },
+  'balance-ajustar-caja': async () => {
+    const M = model();
+    const a = M.ancla;
+    if (!a) return;
+    if (a.refIdx < 0) { commit((st) => { st.config.saldoInicial = r2(a.real.caja); }); toast('Saldo inicial del flujo = disponibilidades del balance.'); return; }
+    const w = M.weeks[a.refIdx * 4 + 3];
+    const ok = await confirmar({ title: 'Ajustar el flujo a la caja real', text: `Se registra ${money(a.off.caja, { sign: true })} como real de ${esc(weekLabel(w))} en «Ajustes de conciliación», para que el saldo del flujo al cierre de ${esc(mLabel(M.months[a.refIdx]))} sea igual a las disponibilidades del balance. Desde ahí, el flujo parte de la caja real.`, ok: 'Ajustar' });
+    if (ok) commit((st) => { const prev = ((st.valores.__ajuste || {})[w.key] || {}).r || 0; setValor(st, '__ajuste', w.key, 'r', r2(prev + a.off.caja)); });
+  },
+});
 /* ---------- acciones ---------- */
 const ACTIONS = {
   'modal-cerrar': () => closeModal(),
@@ -5732,6 +6381,12 @@ function bindEvents() {
       return;
     }
     if (el.id === 'foto-sel') { UI.fotoSel = el.value; render(); return; }
+    if (el.id === 'bal-sel') { UI.balSel = el.value; render(); return; }
+    if (el.dataset.balRubro || el.dataset.eerrRubro) {
+      const [bid, i] = (el.dataset.balRubro || el.dataset.eerrRubro).split('|');
+      commit((st) => { const b = st.balancesReales.find((x) => x.id === bid); const l = (el.dataset.balRubro ? b.lineas : b.eerr)[Number(i)]; l.rubro = el.value; if (el.dataset.eerrRubro) { const sg = RUBROS_EERR[l.rubro].signo; l.monto = sg < 0 ? -Math.abs(l.valor) : l.valor; } });
+      return;
+    }
     if (el.matches('input.plan-in')) {
       const [pid, mk] = el.dataset.plan.split('|');
       const t = el.value.trim();

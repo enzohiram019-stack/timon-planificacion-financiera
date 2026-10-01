@@ -18,7 +18,7 @@ Herramienta web de planificación financiera. Funciona de dos maneras:
 | **Plan comercial** | Presupuesto de ventas por cliente y producto: cantidades por mes, precio y plazo de cobro. Avance contra lo vendido, clientes y productos con costo unitario. |
 | **Producción y stock** | Receta de cada producto (toneladas de cada insumo por tonelada), stock de materia prima y de producto terminado en toneladas, compras planificadas para mantener el stock mínimo (van al flujo según el plazo del proveedor) y costo promedio de la materia prima, que es el costo de ventas del EERR. |
 | **Presupuesto EERR** | Estado de resultados mensual en tres versiones (presupuesto, real y proyección) y comparativo con variaciones. El presupuesto se puede aprobar (queda fijo). |
-| **Balance proyectado** | Balance al cierre de cada mes con control de cuadre e indicadores (liquidez, prueba ácida, endeudamiento, capital de trabajo). |
+| **Balance** | Balance proyectado al cierre de cada mes (activo y pasivo corriente / no corriente, patrimonio) con control de cuadre e indicadores. **Importar balance real**: lee el balance de la empresa en PDF, Excel o texto pegado; la proyección parte de esos saldos. **Análisis del balance**: liquidez, endeudamiento, rentabilidad, ciclo de caja y una lectura en palabras. |
 | **Indicadores** | Cobertura de caja en semanas, días de cobro y de pago (general y por cliente o proveedor), días de inventario, punto de equilibrio y margen de contribución; precisión de la proyección: fotos mensuales automáticas comparadas contra lo que pasó. |
 | **Escenarios** | Base, optimista y pesimista: ajustan volumen y precio de lo que falta vender y los días de cobro. Compara caja y resultado y permite elegir el escenario en uso. |
 | **Configuración** | Empresa, moneda y tipo de cambio, período, supuestos, estructura del flujo (grupos, líneas y su tipo) y respaldos. |
@@ -41,6 +41,19 @@ Otras conexiones:
 - **Compras de materia prima**: al registrar una compra se puede indicar el insumo y las toneladas; suma al stock y descuenta lo planificado.
 
 Las compras funcionan igual del lado de los pagos. El IVA de ventas (débito) y de compras (crédito) se liquida por mes y se proyecta como pago el día configurado del mes siguiente. Ventas, compras y préstamos pueden estar en US$ o en guaraníes con su tipo de cambio; si un cobro o pago se hace a otro tipo de cambio, la diferencia va al EERR como diferencia de cambio.
+
+## Balance real
+
+En **Balance → Importar balance real** se elige el PDF o el Excel del balance (por ejemplo, el balance provisorio del contador) o se pega su texto.
+
+- **Lectura**: reconoce los títulos habituales (Activo, Activo corriente, Disponibilidades, Créditos, Inventarios, Propiedad planta y equipo, Pasivo corriente, Deudas financieras, Patrimonio neto, Capital, Reservas, Resultados…) y el estado de resultados que venga después. Descarta los subtotales (una cuenta igual a la suma de las que le siguen) y controla que la suma de las cuentas dé los totales del archivo, que activo = pasivo + patrimonio y que el resultado del estado de resultados sea el del balance. Montos con puntos de miles (1.234.567), en inglés (1,234,567.89), entre paréntesis o «-» (cero).
+- **Rubros**: cada cuenta va a un rubro del balance proyectado (Disponibilidades, Deudores por ventas, Otros créditos, Inventarios, Propiedad planta y equipo, Otros activos no corrientes, Acreedores comerciales, Deudas financieras corto y largo plazo, Otras cuentas por pagar, IVA, Impuesto a la renta, Otros pasivos no corrientes, Capital, Reservas, Resultados acumulados, Resultado del ejercicio). Se puede cambiar en la pestaña **Balances reales**.
+- **Moneda**: si el balance está en guaraníes y los reportes en dólares, se convierte al tipo de cambio que se indica al importar.
+- **Proyección**: desde el mes del balance, cada rubro del balance proyectado = saldo real + movimientos proyectados después de esa fecha (flujo, ventas, compras, préstamos, EERR). Los meses anteriores quedan como estimados. Al cambiar de año, el resultado del ejercicio pasa a resultados acumulados. Si el balance es del mes anterior al período, es el balance inicial.
+- **Caja**: si la caja del flujo no coincide con las disponibilidades del balance, el botón **Ajustar el flujo a la caja real** registra la diferencia como ajuste de conciliación (o, si es el balance inicial, la usa como saldo inicial del flujo).
+- **Análisis del balance**: liquidez corriente, prueba ácida, liquidez inmediata, capital de trabajo, endeudamiento, pasivo / patrimonio, deuda financiera neta, margen bruto, resultado operativo, EBITDA, cobertura de intereses, efecto de la diferencia de cambio, ROE anualizado, días de cobro, inventario y pago, y ciclo de caja, con una lectura en palabras. Los días se calculan con el estado de resultados acumulado desde el 1 de enero hasta la fecha del balance.
+
+El lector de PDF (pdf.js) se carga desde internet al usarlo, igual que el de Excel.
 
 ## Plantilla Excel
 
