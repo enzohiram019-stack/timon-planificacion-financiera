@@ -1,0 +1,12 @@
+{
+  "name": "timon-planificacion-financiera",
+  "version": "3.0.0",
+  "private": true,
+  "description": "Planificación financiera: flujo de caja semanal, ventas y cobranzas, plan comercial, producción, presupuesto EERR y balance proyectado, con usuarios y datos compartidos.",
+  "scripts": {
+    "start": "node server/server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

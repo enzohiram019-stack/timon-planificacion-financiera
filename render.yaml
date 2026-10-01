@@ -1,0 +1,25 @@
+# Blueprint de Render: servicio web con usuarios y datos compartidos (plan pago + disco persistente).
+# En Render: New → Blueprint → elegir el repositorio que contiene este archivo.
+# Al crear el servicio Render pide ADMIN_EMAIL y ADMIN_PASSWORD (primer administrador).
+# Para la versión sin usuarios (sitio estático gratis) usar render-estatico/render.yaml.
+services:
+  - type: web
+    name: timon-planificacion-financiera
+    runtime: node
+    plan: starter
+    buildCommand: echo "Sin dependencias"
+    startCommand: node server/server.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATA_DIR
+        value: /var/data
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+    disk:
+      name: datos-timon
+      mountPath: /var/data
+      sizeGB: 1

@@ -1,0 +1,4 @@
+# Datos de las empresas: no subirlos al repositorio.
+datos/
+data/
+node_modules/

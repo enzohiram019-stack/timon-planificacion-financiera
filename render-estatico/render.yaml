@@ -1,0 +1,22 @@
+# Alternativa sin usuarios: sitio estático gratis (los datos quedan en el navegador de cada persona).
+# Para usarlo, copiar este archivo a la raíz del repositorio en lugar del render.yaml del servidor,
+# o crear el sitio a mano: New → Static Site, Build Command vacío, Publish Directory «public».
+services:
+  - type: web
+    name: timon-planificacion-financiera
+    runtime: static
+    buildCommand: echo "Sitio estatico, no requiere compilacion"
+    staticPublishPath: ./public
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: SAMEORIGIN
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: no-referrer
+      - path: /*
+        name: Cache-Control
+        value: no-cache
